@@ -1,0 +1,4 @@
+pyserial>=3.5
+# pigpio is required on the real flight computer.  It is not installed by pip on
+# all platforms; use the distribution package (python3-pigpio) or pip on the RPi.
+# pigpio>=1.78

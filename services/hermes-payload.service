@@ -1,0 +1,22 @@
+[Unit]
+Description=HERMES payload (ADS-B + battery thermal control)
+After=pigpiod.service network.target
+Wants=pigpiod.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=notify
+WorkingDirectory=/opt/hermes
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/hermes
+ExecStart=/usr/bin/python3 -m hermes.main
+ExecStopPost=/usr/bin/python3 /opt/hermes/scripts/safe_off.py
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=35
+WatchdogSec=10
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
