@@ -1,0 +1,118 @@
+/*
+ * Exemplo real de integracao no OBC (polisat-org/OBC,
+ * functionalCodes/stateMachineVSCode).
+ *
+ * STM32L476RG, STM32Cube FW_L4 V1.18.2, CMSIS-RTOS2.
+ * USART3 = PC4(TX)/PC5(RX), 115200 8N1, 3.3 V TTL.
+ *
+ * IMPORTANTE: o OBC roda com MSI a 4 MHz (sem PLL). Uma IRQ por byte a
+ * 115200 baud seriam 115200 interrupcoes/s -- impossivel. Por isso a
+ * recepcao real usa DMA com IRQ de transferencia completa, sem polling.
+ *
+ * O modelo byte-a-byte por interrupcao continua disponivel e testado no
+ * host em hal_uart_mock.c / test_receiver.c (hermes_rx_on_byte_isr()).
+ *
+ * Para aplicar: copie os arquivos de obc_integration/ para o projeto do
+ * OBC e siga obc_integration/PATCHES.md. Este arquivo e apenas a cola
+ * minima (equivalente aos trechos USER CODE de PATCHES.md).
+ */
+#include "stm32l4xx_hal.h"
+#include "cmsis_os.h"
+
+#include "hermes_adsb.h"      /* obc_integration/hermes_adsb.h */
+#include "hermes_protocol.h"
+
+/* ------------------------------------------------------- MSP (USER CODE) */
+/* Chame isto dentro de HAL_UART_MspInit(), no ramo USART3, bloco
+ * "USER CODE BEGIN USART3_MspInit 1": */
+void example_usart3_msp_hook(UART_HandleTypeDef *huart)
+{
+    HermesAdsb_InitDma(huart);   /* DMA1_Channel3 / DMA_REQUEST_2 */
+}
+
+/* ------------------------------------------------------------ ISRs */
+/* Em stm32l4xx_it.c, bloco "USER CODE BEGIN 1": */
+void USART3_IRQHandler(void)
+{
+    HAL_UART_IRQHandler(&huart3);
+}
+
+void DMA1_Channel3_IRQHandler(void)
+{
+    HermesAdsb_DmaIrqHandler();
+}
+
+/* ---------------------------------------------------- HAL callbacks */
+/* Em main.c, dentro de HAL_UART_RxCpltCallback() e
+ * HAL_UART_ErrorCallback(), depois do ramo USART1/USART2: */
+void example_rx_cplt(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART3) {
+        HermesAdsb_RxCpltCallback(huart);
+    }
+}
+
+void example_error(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART3) {
+        HermesAdsb_ErrorCallback(huart);
+    }
+}
+
+/* ------------------------------------------------------------- init */
+/* Em main.c, USER CODE 2, depois de MX_USART3_UART_Init(): */
+void example_init(UART_HandleTypeDef *huart)
+{
+    HermesAdsb_Init(huart, NULL);   /* a task registra o osThreadId depois */
+}
+
+/* ------------------------------------------------------------- task */
+/* Task FreeRTOS: acorda na IRQ do DMA, copia o bloco e publica o resumo.
+ * Leitura de 4080 bytes fora da ISR, com IRQ mascarada durante o memcpy. */
+void StartHermesTask(void *argument)
+{
+    static Plane_t planes[HERMES_NUM_PLANES];
+
+    HermesAdsb_SetNotifyTask(osThreadGetId());
+
+    for (;;) {
+        while (HermesAdsb_Take(planes)) {
+            /* planes[0..19] prontos; met_s esta no segundo float.
+             * Instante estimado da mensagem: p->met_s - p->seen. */
+            HermesSummary_t sum = {0};
+            uint32_t i;
+
+            sum.icao = -1;
+            for (i = 0U; i < HERMES_NUM_PLANES; i++) {
+                if (planes[i].icaoID > 0.0f) {
+                    if (sum.icao < 0) {
+                        sum.icao = (int32_t)planes[i].icaoID;
+                        sum.met_ms = (uint32_t)(planes[i].met_s * 1000.0f);
+                    }
+                    sum.count++;
+                }
+            }
+
+            Event_t evt = {
+                .type = EVT_HERMES_DONE,
+                .timestamp = osKernelGetTickCount(),
+                .data.hermes = sum,
+            };
+            (void)osMessageQueuePut(eventQueueHandle, &evt, 0U, 100U);
+        }
+
+        (void)osThreadFlagsWait(HERMES_ADSB_FLAG, osFlagsWaitAny, 1000U);
+        HermesAdsb_CheckTimeout(osKernelGetTickCount());
+    }
+}
+
+/* Estatisticas para debug via USART2: buffers, overruns, dma_errors,
+ * resyncs -- todos devem ficar em 0 exceto buffers. */
+void example_print_stats(void)
+{
+    const HermesAdsbStats_t *s = HermesAdsb_Stats();
+
+    debugPrintf("ads-b buffers=%lu ovr=%lu err=%lu resync=%lu\r\n",
+            (unsigned long)s->buffers, (unsigned long)s->overruns,
+            (unsigned long)s->dma_errors, (unsigned long)s->resyncs);
+}

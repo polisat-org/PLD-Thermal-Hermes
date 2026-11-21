@@ -1,0 +1,500 @@
+diff --git a/Core/Inc/customTypes.h b/Core/Inc/customTypes.h
+index 87f6a6d..582888d 100644
+--- a/Core/Inc/customTypes.h
++++ b/Core/Inc/customTypes.h
+@@ -12,12 +12,21 @@ typedef enum {
+ 	EVT_MISSION_DONE,
+ 	EVT_DEPLOY_DONE,
+ 	EVT_DETUMBLING_DONE,
++	EVT_HERMES_DONE,
+ } EventType_t;
+ 
++typedef struct {
++	uint32_t sequence;
++	uint32_t count;
++	uint32_t met_ms;
++	int32_t  icao;
++} HermesSummary_t;
++
+ typedef union {
+ 	uint8_t telecommand;
+ 	Telemetry_t *telemetry;
+ 	uint32_t error_code;
++	HermesSummary_t hermes;
+ } EventData_t;
+ 
+ typedef struct {
+diff --git a/Core/Inc/hermes_adsb.h b/Core/Inc/hermes_adsb.h
+index bb5ec1d..20ebed6 100644
+--- a/Core/Inc/hermes_adsb.h
++++ b/Core/Inc/hermes_adsb.h
+@@ -1,17 +1,17 @@
+ /*
+- * HERMES ADS-B -> OBC (polisat-org/OBC, functionalCodes/stateMachineVSCode)
++ * HERMES ADS-B -> OBC: receptor do stream de 4080 bytes por DMA.
+  *
+- * STM32L476RG, STM32Cube FW_L4 V1.18.2, CMSIS-RTOS2 (FreeRTOS).
+- * USART3 (PC4 TX / PC5 RX) recebe 20 * 204 = 4080 bytes a cada 5 s.
++ * O protocolo (20 Plane_t de 204 bytes a cada 5 s, 115200 8N1) e fixo.
++ * A UART/DMA usada pelo OBC NAO e fixa: veja hermes_config.h. Os padroes
++ * reproduzem o stateMachineVSCode examinado, mas podem ser sobrescritos.
+  *
+- * O OBC roda com MSI a 4 MHz. Uma IRQ por byte a 115200 baud seriam
+- * 115200 interrupcoes/s -- impossivel nesse clock. Por isso a integracao
+- * usa DMA com interrupcao de transferencia completa (ainda sem polling,
+- * ainda orientada a interrupcao). O teste host em stm32_test/ continua
+- * modelando a recepcao byte-a-byte por IT para validar a logica da ISR.
++ * Uma IRQ por byte a 115200 baud seriam 115200 interrupcoes/s -- inviavel
++ * num OBC a 4 MHz. Por isso o transporte e feito por DMA e so uma IRQ por
++ * bloco completo avisa a task (sem polling). O teste host em stm32_test/
++ * modela a recepcao byte-a-byte por IT apenas para validar a logica da ISR.
+  *
+- * NAO altera USART1 (telecomandos), USART2 (debug/telemetria) nem o layout
+- * de Telemetry_t (85 bytes).
++ * Por padrao nao mexe em USART1 (telecomandos), USART2 (debug/telemetria)
++ * nem no layout de Telemetry_t (85 bytes).
+  */
+ #ifndef HERMES_ADSB_H
+ #define HERMES_ADSB_H
+@@ -19,16 +19,13 @@
+ #include "main.h"          /* traz stm32l4xx_hal.h */
+ #include "cmsis_os.h"
+ 
++#include "hermes_config.h"   /* UART/DMA/tempos: trocar aqui, nao na logica */
+ #include "hermes_protocol.h"
+ 
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+ 
+-/* Flag exclusiva da task Hermes (receiveTask usa os bits 0 e 1). */
+-#define HERMES_ADSB_FLAG           (1U << 2)
+-#define HERMES_ADSB_TIMEOUT_MS     7000U   /* > 5 s + margem */
+-
+ typedef enum {
+     HERMES_ADSB_STATE_IDLE = 0U,
+     HERMES_ADSB_STATE_READY,
+@@ -45,16 +42,16 @@ typedef struct {
+ } HermesAdsbStats_t;
+ 
+ /*
+- * Chamado por HAL_UART_MspInit(), dentro do USER CODE BEGIN USART3_MspInit 1.
+- * Configura DMA1_Channel3 com DMA_REQUEST_2 (USART3_RX) e habilita as IRQs.
++ * Chamado por HAL_UART_MspInit(), dentro do USER CODE do ramo da UART
++ * escolhida. Configura o DMA de hermes_config.h e habilita as IRQs.
+  */
+ void HermesAdsb_InitDma(UART_HandleTypeDef *huart);
+ 
+-/* Chamado pelo DMA1_Channel3_IRQHandler (stm32l4xx_it.c). */
++/* Chamado pelo handler de IRQ do DMA (stm32l4xx_it.c). */
+ void HermesAdsb_DmaIrqHandler(void);
+ 
+ /*
+- * Chamado no USER CODE 2 do main(), depois de MX_USART3_UART_Init().
++ * Chamado no USER CODE 2 do main(), depois do MX_USARTx_UART_Init().
+  * Arma o primeiro DMA de 4080 bytes.
+  */
+ void HermesAdsb_Init(UART_HandleTypeDef *huart, osThreadId_t notifyTask);
+@@ -65,7 +62,7 @@ void HermesAdsb_SetNotifyTask(osThreadId_t notifyTask);
+ 
+ /*
+  * Chamados dentro de HAL_UART_RxCpltCallback / HAL_UART_ErrorCallback do
+- * main.c, somente quando huart->Instance == USART3.
++ * main.c, somente quando huart->Instance == HERMES_ADSB_UART_INSTANCE.
+  */
+ void HermesAdsb_RxCpltCallback(UART_HandleTypeDef *huart);
+ void HermesAdsb_ErrorCallback(UART_HandleTypeDef *huart);
+@@ -78,9 +75,9 @@ void HermesAdsb_ErrorCallback(UART_HandleTypeDef *huart);
+ int HermesAdsb_Take(Plane_t out[HERMES_NUM_PLANES]);
+ 
+ /*
+- * Chamar periodicamente na task. Se nenhum bloco chegou em 7 s, aborta e
+- * reinicia o DMA -- isso realinha o receptor caso o OBC tenha entrado no
+- * meio de um envio de 4080 bytes (o protocolo nao tem cabecalho).
++ * Chamar periodicamente na task. Se nenhum bloco chegou em
++ * HERMES_ADSB_TIMEOUT_MS, aborta e reinicia o DMA -- isso realinha o
++ * receptor caso o OBC tenha entrado no meio de um bloco (nao ha cabecalho).
+  */
+ void HermesAdsb_CheckTimeout(uint32_t now_tick_ms);
+ 
+diff --git a/Core/Inc/hermes_config.h b/Core/Inc/hermes_config.h
+new file mode 100644
+index 0000000..e877c46
+--- /dev/null
++++ b/Core/Inc/hermes_config.h
+@@ -0,0 +1,78 @@
++/*
++ * HERMES ADS-B no OBC - CONFIGURACAO
++ *
++ * Este e o UNICO lugar para trocar UART, DMA, prioridades e tempos do receptor.
++ * Os valores abaixo sao apenas PADROES para o stateMachineVSCode examinado.
++ * Se o OBC mudou (outra UART, outro DMA, outro clock), NAO edite a logica:
++ * redefina os macros aqui ou passe -DHERMES_ADSB_... na linha do compilador.
++ *
++ * O protocolo em si (20 x 204 = 4080 bytes crus, 115200 8N1) NAO depende
++ * de nenhum destes macros: eles escolhem somente ONDE o OBC recebe o stream.
++ * A baud rate e os pinos fisicos sao configurados pelo CubeMX (.ioc) e nao
++ * por este arquivo - confira MX_USARTx_UART_Init() e o GPIO da sua placa.
++ */
++#ifndef HERMES_CONFIG_H
++#define HERMES_CONFIG_H
++
++/* ---------------------------------------------------------------- UART --- */
++/* Padrao: USART3, com PC5 = RX e PC4 = TX, handle gerado pelo CubeMX. */
++#ifndef HERMES_ADSB_UART_INSTANCE
++#define HERMES_ADSB_UART_INSTANCE        USART3
++#endif
++#ifndef HERMES_ADSB_UART_HANDLE
++#define HERMES_ADSB_UART_HANDLE          huart3
++#endif
++#ifndef HERMES_ADSB_UART_IRQn
++#define HERMES_ADSB_UART_IRQn            USART3_IRQn
++#endif
++#ifndef HERMES_ADSB_BAUD
++#define HERMES_ADSB_BAUD                 115200U   /* so documentacao/conferencia */
++#endif
++
++/* ----------------------------------------------------------------- DMA --- */
++/* STM32L4 sem DMAMUX: Init.Request e o codigo CSEL (0..7) do DMA_CSELR.
++ * No L476, USART3_RX = DMA1 Channel3 / request 2 (RM0351 tabela 38).
++ * Em outro modelo/clock, troque os quatro itens abaixo em conjunto. */
++#ifndef HERMES_ADSB_DMA_CLK_ENABLE
++#define HERMES_ADSB_DMA_CLK_ENABLE()     __HAL_RCC_DMA1_CLK_ENABLE()
++#endif
++#ifndef HERMES_ADSB_DMA_INSTANCE
++#define HERMES_ADSB_DMA_INSTANCE         DMA1_Channel3
++#endif
++#ifndef HERMES_ADSB_DMA_REQUEST
++#define HERMES_ADSB_DMA_REQUEST          DMA_REQUEST_2
++#endif
++#ifndef HERMES_ADSB_DMA_IRQn
++#define HERMES_ADSB_DMA_IRQn             DMA1_Channel3_IRQn
++#endif
++
++/* Prioridade das IRQs do HERMES. Deve ser >= configLIBRARY_MAX_SYSCALL_... . */
++#ifndef HERMES_ADSB_IRQ_PRIORITY
++#define HERMES_ADSB_IRQ_PRIORITY         5U
++#endif
++
++/* --------------------------------------------------------------- RTOS ---- */
++/* Bit de thread flag usado só pela task do HERMES (evite bits 0 e 1). */
++#ifndef HERMES_ADSB_FLAG
++#define HERMES_ADSB_FLAG                 (1U << 2)
++#endif
++/* Sem cabecalho no stream: se nada chegar nesse tempo, aborta/rearma o DMA. */
++#ifndef HERMES_ADSB_TIMEOUT_MS
++#define HERMES_ADSB_TIMEOUT_MS           7000U   /* > 5 s + margem */
++#endif
++/* A task acorda periodicamente para checar o timeout, mesmo sem chegada. */
++#ifndef HERMES_ADSB_TASK_POLL_MS
++#define HERMES_ADSB_TASK_POLL_MS         1000U
++#endif
++/* Tempo maximo esperando a fila de eventos (nao pode travar o resync). */
++#ifndef HERMES_ADSB_QUEUE_TIMEOUT_MS
++#define HERMES_ADSB_QUEUE_TIMEOUT_MS     100U
++#endif
++
++/* --------------------------------------------------------------- falha --- */
++/* Sobrescreva se o projeto nao tiver Error_Handler(). */
++#ifndef HERMES_ADSB_ON_ERROR
++#define HERMES_ADSB_ON_ERROR()           Error_Handler()
++#endif
++
++#endif /* HERMES_CONFIG_H */
+diff --git a/Core/Src/hermes_adsb.c b/Core/Src/hermes_adsb.c
+index 5612a15..cdbbfbc 100644
+--- a/Core/Src/hermes_adsb.c
++++ b/Core/Src/hermes_adsb.c
+@@ -1,6 +1,7 @@
+ /*
+- * Recepcao do stream HERMES no OBC via USART3 + DMA.
++ * Recepcao do stream HERMES no OBC por UART + DMA.
+  * Sem header, sem CRC, sem polling: o bloco de 4080 bytes e a unidade.
++ * UART/DMA/prioridades/timeout vem de hermes_config.h.
+  */
+ #include "hermes_adsb.h"
+ 
+@@ -8,7 +9,7 @@
+ 
+ static UART_HandleTypeDef *g_uart;
+ static osThreadId_t g_notify;
+-static DMA_HandleTypeDef g_hdma_uart3_rx;
++static DMA_HandleTypeDef g_hdma_rx;
+ 
+ /* Dois bancos de 4080 bytes: o DMA enche um enquanto a task le o outro. */
+ static uint8_t g_dma_buf[2][HERMES_BUFFER_SIZE] __attribute__((aligned(4)));
+@@ -18,41 +19,42 @@ static HermesAdsbStats_t g_stats;
+ 
+ void HermesAdsb_InitDma(UART_HandleTypeDef *huart)
+ {
+-    if (huart == NULL || huart->Instance != USART3) {
++    if (huart == NULL || huart->Instance != HERMES_ADSB_UART_INSTANCE) {
+         return;
+     }
+ 
+-    __HAL_RCC_DMA1_CLK_ENABLE();
+-
+-    g_hdma_uart3_rx.Instance = DMA1_Channel3;
+-    /* STM32L476 nao tem DMAMUX: Init.Request e o valor CSEL (0..7) daquele
+-     * canal, nao um simbolo LL_DMAMUX_REQ_*. RM0351 Table 38: DMA1 request 2
+-     * no Channel3 = USART3_RX (o mesmo request 2 no Channel6 = USART2_RX). */
+-    g_hdma_uart3_rx.Init.Request = DMA_REQUEST_2;
+-    g_hdma_uart3_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
+-    g_hdma_uart3_rx.Init.PeriphInc = DMA_PINC_DISABLE;
+-    g_hdma_uart3_rx.Init.MemInc = DMA_MINC_ENABLE;
+-    g_hdma_uart3_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+-    g_hdma_uart3_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+-    g_hdma_uart3_rx.Init.Mode = DMA_NORMAL;
+-    g_hdma_uart3_rx.Init.Priority = DMA_PRIORITY_HIGH;
+-    if (HAL_DMA_Init(&g_hdma_uart3_rx) != HAL_OK) {
+-        Error_Handler();
++    HERMES_ADSB_DMA_CLK_ENABLE();
++
++    g_hdma_rx.Instance = HERMES_ADSB_DMA_INSTANCE;
++    /* Em STM32L4 sem DMAMUX, Init.Request e o codigo CSEL (0..7) do canal,
++     * nao um simbolo LL_DMAMUX_REQ_*. Os valores padrao (DMA1 Ch3 / req 2)
++     * mapeiam USART3_RX no L476; troque tudo em hermes_config.h se o OBC
++     * usar outro modelo. */
++    g_hdma_rx.Init.Request = HERMES_ADSB_DMA_REQUEST;
++    g_hdma_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
++    g_hdma_rx.Init.PeriphInc = DMA_PINC_DISABLE;
++    g_hdma_rx.Init.MemInc = DMA_MINC_ENABLE;
++    g_hdma_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
++    g_hdma_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
++    g_hdma_rx.Init.Mode = DMA_NORMAL;
++    g_hdma_rx.Init.Priority = DMA_PRIORITY_HIGH;
++    if (HAL_DMA_Init(&g_hdma_rx) != HAL_OK) {
++        HERMES_ADSB_ON_ERROR();
+     }
+ 
+-    __HAL_LINKDMA(huart, hdmarx, g_hdma_uart3_rx);
++    __HAL_LINKDMA(huart, hdmarx, g_hdma_rx);
+ 
+-    HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 5, 0);
+-    HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
++    HAL_NVIC_SetPriority(HERMES_ADSB_DMA_IRQn, HERMES_ADSB_IRQ_PRIORITY, 0);
++    HAL_NVIC_EnableIRQ(HERMES_ADSB_DMA_IRQn);
+ 
+     /* Necessario para HAL_UART_ErrorCallback avisar overrun/framing. */
+-    HAL_NVIC_SetPriority(USART3_IRQn, 5, 0);
+-    HAL_NVIC_EnableIRQ(USART3_IRQn);
++    HAL_NVIC_SetPriority(HERMES_ADSB_UART_IRQn, HERMES_ADSB_IRQ_PRIORITY, 0);
++    HAL_NVIC_EnableIRQ(HERMES_ADSB_UART_IRQn);
+ }
+ 
+ void HermesAdsb_DmaIrqHandler(void)
+ {
+-    HAL_DMA_IRQHandler(&g_hdma_uart3_rx);
++    HAL_DMA_IRQHandler(&g_hdma_rx);
+ }
+ 
+ void HermesAdsb_SetNotifyTask(osThreadId_t notifyTask)
+diff --git a/Core/Src/main.c b/Core/Src/main.c
+index 7c409c5..44d50cf 100644
+--- a/Core/Src/main.c
++++ b/Core/Src/main.c
+@@ -28,6 +28,7 @@
+ #include "customTypes.h"
+ #include "BME280.h"
+ #include "DS3231.h"
++#include "hermes_adsb.h"
+ /* USER CODE END Includes */
+ 
+ /* Private typedef -----------------------------------------------------------*/
+@@ -103,6 +104,13 @@ const osThreadAttr_t missionTask_attributes = {
+   .stack_size = 128 * 4,
+   .priority = (osPriority_t) osPriorityLow,
+ };
++/* Definitions for hermesTask */
++osThreadId_t hermesTaskHandle;
++const osThreadAttr_t hermesTask_attributes = {
++  .name = "hermesTask",
++  .stack_size = 128 * 4,
++  .priority = (osPriority_t) osPriorityLow,
++};
+ /* Definitions for eventQueue */
+ osMessageQueueId_t eventQueueHandle;
+ const osMessageQueueAttr_t eventQueue_attributes = {
+@@ -155,6 +163,7 @@ void vHkTickCallback(void *argument);
+ static void debugPrintf(const char *format, ...);
+ static void handleTelecommand(uint8_t tc, SatMode_t *mode,
+ 		bool *deployInProgress, volatile bool *deployCompleted);
++void StartHermesTask(void *argument);
+ /* USER CODE END PFP */
+ 
+ /* Private user code ---------------------------------------------------------*/
+@@ -266,6 +275,7 @@ int main(void)
+   MX_USART1_UART_Init();
+   MX_USART3_UART_Init();
+   /* USER CODE BEGIN 2 */
++  HermesAdsb_Init(&HERMES_ADSB_UART_HANDLE, NULL);
+ 
+   /* USER CODE END 2 */
+ 
+@@ -325,7 +335,7 @@ int main(void)
+   missionTaskHandle = osThreadNew(StartMissionTask, NULL, &missionTask_attributes);
+ 
+   /* USER CODE BEGIN RTOS_THREADS */
+-  /* add threads, ... */
++  hermesTaskHandle = osThreadNew(StartHermesTask, NULL, &hermesTask_attributes);
+   /* USER CODE END RTOS_THREADS */
+ 
+   /* USER CODE BEGIN RTOS_EVENTS */
+@@ -602,6 +612,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+         (void)osThreadFlagsSet(receiveTaskHandle, USART1_RX_FLAG);
+     }
+ #endif
++    else if (huart->Instance == HERMES_ADSB_UART_INSTANCE)
++    {
++        HermesAdsb_RxCpltCallback(huart);
++    }
+ }
+ 
+ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+@@ -635,6 +649,10 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+         }
+     }
+ #endif
++    else if (huart->Instance == HERMES_ADSB_UART_INSTANCE)
++    {
++        HermesAdsb_ErrorCallback(huart);
++    }
+ }
+ /* USER CODE END 4 */
+ 
+@@ -709,6 +727,15 @@ void StartMainTask(void *argument)
+ 			}
+ 			break;
+ 
++		case EVT_HERMES_DONE:
++			debugPrintf("[%08lu] ads-b seq=%lu n=%lu icao=%06lX met_ms=%lu\r\n",
++					evt.timestamp,
++					(unsigned long)evt.data.hermes.sequence,
++					(unsigned long)evt.data.hermes.count,
++					(unsigned long)evt.data.hermes.icao,
++					(unsigned long)evt.data.hermes.met_ms);
++			break;
++
+ 		default:
+ 			debugPrintf("[%08lu] unknown event=%u\r\n",
+ 					evt.timestamp, (unsigned int)evt.type);
+@@ -911,6 +938,49 @@ void StartDetumblingTask(void *argument)
+   /* USER CODE END StartDetumblingTask */
+ }
+ 
++void StartHermesTask(void *argument)
++{
++    static Plane_t planes[HERMES_NUM_PLANES];
++
++    HermesAdsb_SetNotifyTask(osThreadGetId());
++
++    for (;;)
++    {
++        while (HermesAdsb_Take(planes))
++        {
++            HermesSummary_t sum = {0};
++            uint32_t i;
++
++            sum.sequence = HermesAdsb_Stats()->buffers;
++            sum.icao = -1;
++
++            for (i = 0U; i < HERMES_NUM_PLANES; i++)
++            {
++                if (planes[i].icaoID > 0.0f)
++                {
++                    if (sum.icao < 0) {
++                        sum.icao = (int32_t)planes[i].icaoID;
++                        sum.met_ms = (uint32_t)(planes[i].met_s * 1000.0f);
++                    }
++                    sum.count++;
++                }
++            }
++
++            Event_t evt = {
++                .type = EVT_HERMES_DONE,
++                .timestamp = osKernelGetTickCount(),
++                .data.hermes = sum,
++            };
++            (void)osMessageQueuePut(eventQueueHandle, &evt, 0U,
++                                    HERMES_ADSB_QUEUE_TIMEOUT_MS);
++        }
++
++        (void)osThreadFlagsWait(HERMES_ADSB_FLAG, osFlagsWaitAny,
++                                HERMES_ADSB_TASK_POLL_MS);
++        HermesAdsb_CheckTimeout(osKernelGetTickCount());
++    }
++}
++
+ /* USER CODE BEGIN Header_StartMissionTask */
+ /**
+ * @brief Function implementing the missionTask thread.
+diff --git a/Core/Src/stm32l4xx_hal_msp.c b/Core/Src/stm32l4xx_hal_msp.c
+index 66871fb..ce7a521 100644
+--- a/Core/Src/stm32l4xx_hal_msp.c
++++ b/Core/Src/stm32l4xx_hal_msp.c
+@@ -20,6 +20,7 @@
+ /* Includes ------------------------------------------------------------------*/
+ #include "main.h"
+ /* USER CODE BEGIN Includes */
++#include "hermes_adsb.h"
+ 
+ /* USER CODE END Includes */
+ 
+@@ -275,6 +276,7 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
+     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+ 
+     /* USER CODE BEGIN USART3_MspInit 1 */
++    HermesAdsb_InitDma(huart);
+ 
+     /* USER CODE END USART3_MspInit 1 */
+   }
+diff --git a/Core/Src/stm32l4xx_it.c b/Core/Src/stm32l4xx_it.c
+index 9530e00..68e4e47 100644
+--- a/Core/Src/stm32l4xx_it.c
++++ b/Core/Src/stm32l4xx_it.c
+@@ -22,6 +22,7 @@
+ #include "stm32l4xx_it.h"
+ /* Private includes ----------------------------------------------------------*/
+ /* USER CODE BEGIN Includes */
++#include "hermes_adsb.h"
+ /* USER CODE END Includes */
+ 
+ /* Private typedef -----------------------------------------------------------*/
+@@ -60,6 +61,7 @@ extern TIM_HandleTypeDef htim6;
+ 
+ /* USER CODE BEGIN EV */
+ extern UART_HandleTypeDef huart2;
++extern UART_HandleTypeDef HERMES_ADSB_UART_HANDLE;
+ 
+ /* USER CODE END EV */
+ 
+@@ -190,6 +192,16 @@ void TIM6_DAC_IRQHandler(void)
+ }
+ 
+ /* USER CODE BEGIN 1 */
++void USART3_IRQHandler(void)
++{
++  HAL_UART_IRQHandler(&HERMES_ADSB_UART_HANDLE);
++}
++
++void DMA1_Channel3_IRQHandler(void)
++{
++  HermesAdsb_DmaIrqHandler();
++}
++
+ #if TC_ON_USART2
+ /* Kept here instead of enabling the interrupt in CubeMX; if it is ever enabled
+  * there, delete this handler (CubeMX will generate its own). */
+diff --git a/cmake/files.cmake b/cmake/files.cmake
+index 7e2ef1b..f06e90d 100644
+--- a/cmake/files.cmake
++++ b/cmake/files.cmake
+@@ -3,6 +3,8 @@ target_sources(${PROJECT_NAME} PRIVATE
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/BME280.c"
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/DS3231.c"
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/freertos.c"
++    "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/hermes_adsb.c"
++    "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/hermes_protocol.c"
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/main.c"
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/stm32l4xx_hal_msp.c"
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/stm32l4xx_hal_timebase_tim.c"

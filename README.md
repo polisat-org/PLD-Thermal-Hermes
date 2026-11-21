@@ -7,6 +7,17 @@ telemetry to the OBC over UART and controls two battery heater channels.
 The OBC is the mission master and the only path to the ground segment. The payload
 does not implement TT&C, LoRa or fragmentation.
 
+## O que roda no Raspberry Pi hoje (21/11/2026)
+
+| Pasta | O que é | No Pi |
+|---|---|---|
+| `hermes-simples/` | **payload ADS-B em uso**: dump1090 + 20 aviões em blocos de 4080 B a cada 5 s para o OBC, LIGAR/DESLIGAR pela UART, trailer térmico de 32 B do TCS | `~/hermes/atual` e `/opt/hermes-simples`, serviço `hermes-simples` |
+| `controle-termico-bateria/` | **TCS**: controle térmico das baterias (LQI, 4 DS18B20, aquecedores GPIO 18/19) | `~/tcs`, serviço `tcs` em modo observação (`--sem-pwm`) |
+| `hermes/` (abaixo) | versão 0.1.0 do payload, com frames/CRC e módulo térmico próprio | arquivo; serviço `hermes-payload` desligado |
+
+Os dois serviços rodam juntos (sem pinos em comum; prioridades em `hermes-simples/integracao/`). O protocolo com o
+OBC está em `hermes-simples/PROTOCOLO.md`; o lado do OBC, no repo `polisat-org/OBC`, branch `payload_integration`.
+
 ## Repository layout
 
 ```text

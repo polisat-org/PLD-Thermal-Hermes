@@ -1,0 +1,34 @@
+# TCS (controle térmico das baterias) como serviço, em MODO OBSERVAÇÃO: lê as 4 sondas e decide a 1 Hz,
+# SEM acionar os aquecedores (--sem-pwm). Base: controle-termico-bateria/firmware/servico/tcs.service.
+#
+# Instalar:  sudo cp tcs-observacao.service /etc/systemd/system/tcs.service
+#            sudo systemctl daemon-reload && sudo systemctl enable --now tcs
+# Ligar o PWM real (aquece de verdade; só com alguém olhando e após os testes de segurança do README do TCS):
+#            tirar o " --sem-pwm" do ExecStart, daemon-reload e restart.
+# O hermes-simples lê a última linha do CSV deste serviço e manda ao OBC no trailer térmico de 32 B.
+
+[Unit]
+Description=Controle termico das baterias (TCS, LQI) - modo observacao
+Requires=pigpiod.service
+After=pigpiod.service
+
+[Service]
+Type=notify
+User=root
+WorkingDirectory=/home/polisat/tcs
+ExecStart=/usr/bin/python3 -m tcs --sem-pwm
+ExecStopPost=-/usr/bin/pigs hp 18 0 0
+ExecStopPost=-/usr/bin/pigs hp 19 0 0
+ExecStopPost=-/usr/bin/pinctrl set 18 op dl
+ExecStopPost=-/usr/bin/pinctrl set 19 op dl
+# Laço de 1 s com prioridade sobre o dump1090 (Nice=5 no hermes-simples)
+Nice=-5
+WatchdogSec=10
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+[Unit]
+Description=HERMES Simples - payload ADS-B/UART
+After=pigpiod.service network.target
+Wants=pigpiod.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hermes-simples
+RuntimeDirectory=dump1090-fa
+RuntimeDirectoryMode=0755
+Environment=PYTHONPATH=/opt/hermes-simples
+Environment=MISSION_LOG_PATH=/home/polisat/hermes-simples-mission.csv
+Environment=DECODER_LOG_PATH=/home/polisat/hermes-simples-decoder.log
+ExecStart=/usr/bin/python3 -m hermes_simples.main
+ExecStopPost=/usr/bin/python3 /opt/hermes-simples/scripts/safe_off.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
