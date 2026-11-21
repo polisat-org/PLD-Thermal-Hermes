@@ -1,0 +1,9 @@
+{
+ "_nota": "PADRÃO DA EQUIPE (06/11/2026) para as sondas DS18B20 do controle térmico da bateria. Número = furo no módulo (00-referencias/cad/sondas-numeracao-equipe.jpeg, vista frontal) = fileira da grade no OBC, contada de baixo (junto ao R3) para cima (00-referencias/eletronica/obc-grade-sondas-numeracao.jpeg). Nome antigo do SDD v0.2 entre parênteses. ROM identificada segurando uma sonda por vez (02-sensor-bancada/sessoes/20261106_220810). Sonda 4 identificada em 12/11/2026, 21:45 (segurada na mão: +6,5 °C em 25 s, as outras ±0,1 °C).",
+ "sondas": {
+  "1": {"rom": "2800000048D377", "furo": "superior direito", "nome_antigo": "A2", "fileira_obc": 1},
+  "2": {"rom": "2800000047E859", "furo": "superior esquerdo", "nome_antigo": "A1", "fileira_obc": 2},
+  "3": {"rom": "28000000480FF0", "furo": "inferior direito", "nome_antigo": "B2", "fileira_obc": 3},
+  "4": {"rom": "280000004801DC", "furo": "inferior esquerdo", "nome_antigo": "B1", "fileira_obc": 4}
+ }
+}

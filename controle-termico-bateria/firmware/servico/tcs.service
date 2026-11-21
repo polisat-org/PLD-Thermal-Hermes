@@ -1,0 +1,40 @@
+# Controle térmico das baterias (PoliSat / Hermes) como serviço do systemd. R08: aquecedor desligado se o software parar.
+#
+# Instalar (no Pi, uma vez):   sudo cp ~/tcs/servico/tcs.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# Usar:                        sudo systemctl start tcs      /  sudo systemctl stop tcs   /  journalctl -u tcs -f
+# O hermes-simples (payload da equipe desde 19/11) não usa os pinos 4, 18 e 19 e pode rodar junto. O hermes-payload
+# antigo tinha lógica térmica: nunca os dois ao mesmo tempo (ele está desligado no boot desde 19/11).
+#
+# Como protege:
+#  - parada normal (stop, Ctrl+C, SIGTERM): o próprio tcs zera os PWMs no finally;
+#  - queda (exceção, kill -9, falta de memória): o ExecStopPost zera os PWMs pelo pigpiod, e o systemd reinicia;
+#  - pigpiod caído (o Requires= derruba o tcs junto, e o pigs não consegue falar com ele): o PWM por hardware continua
+#    gerando sozinho; o pinctrl (direto nos registradores, sem daemon) tira os pinos do modo PWM e os põe em saída baixa;
+#  - laço travado (ex.: leitura do 1-Wire presa): sem WATCHDOG=1 por 10 s o systemd mata o processo → ExecStopPost;
+#  - o Pi inteiro travado: só o watchdog de hardware resolve (dtparam=watchdog=on + RuntimeWatchdogSec, ver LEVAR-AO-PI.md);
+#    depois do reset, os GPIO 18/19 voltam a entrada com pull-down interno → MOSFET desligado (conferir na placa se
+#    não há resistor puxando o gate para cima).
+
+[Unit]
+Description=Controle termico das baterias (TCS, LQI)
+Requires=pigpiod.service
+After=pigpiod.service
+
+[Service]
+Type=notify
+User=root
+WorkingDirectory=/home/polisat/tcs
+ExecStart=/usr/bin/python3 -m tcs
+ExecStopPost=-/usr/bin/pigs hp 18 0 0
+ExecStopPost=-/usr/bin/pigs hp 19 0 0
+ExecStopPost=-/usr/bin/pinctrl set 18 op dl
+ExecStopPost=-/usr/bin/pinctrl set 19 op dl
+WatchdogSec=10
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

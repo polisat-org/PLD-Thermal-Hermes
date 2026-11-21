@@ -1,0 +1,6 @@
+# gerados ao rodar o controlador e o teste local
+firmware/logs/
+firmware/teste_local/logs/
+firmware/teste_local/w1/
+firmware/teste_local/w1-lote/
+*.bak-*

@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teste do controle térmico</title>
+<style>
+:root{
+  --fundo:#f7f6f3; --cartao:#ffffff; --borda:#e3e1da; --texto:#1f1e1c; --texto2:#5b5a56; --texto3:#8a8983;
+  --grade:#ecebe6; --eixo:#c9c7bf; --mesa:#a8a69e; --a:#2a78d6; --b:#eb6834; --faixa:rgba(42,120,214,.12);
+  --ok:#1a7f4b; --alerta:#b35c00; --erro:#c0392b; --botao:#1f1e1c; --botao-txt:#fff;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --fundo:#151514; --cartao:#1f1f1d; --borda:#33322f; --texto:#f0efec; --texto2:#c3c2b7; --texto3:#8f8e87;
+  --grade:#2a2a27; --eixo:#4a4945; --mesa:#77756e; --a:#3987e5; --b:#d95926; --faixa:rgba(57,135,229,.18);
+  --ok:#4cc38a; --alerta:#f0a040; --erro:#ff7a6b; --botao:#f0efec; --botao-txt:#151514;
+}}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--fundo);color:var(--texto);font:13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+/* tela inteira, sem rolar: barra no topo, gráficos à esquerda, painel à direita */
+.app{height:100vh;display:grid;grid-template-rows:auto 1fr;gap:10px;padding:10px 16px}
+.topo{display:flex;flex-wrap:wrap;align-items:end;gap:8px 14px;background:var(--cartao);border:1px solid var(--borda);
+  border-radius:10px;padding:8px 12px}
+.topo h1{font-size:15px;margin:0;align-self:center;margin-right:6px}
+label{display:flex;flex-direction:column;gap:2px;font-size:11px;color:var(--texto2)}
+select,input{font:inherit;color:var(--texto);background:var(--fundo);border:1px solid var(--borda);border-radius:6px;padding:4px 6px}
+input[type=number]{width:62px}
+button{font:inherit;border:1px solid var(--borda);background:var(--fundo);color:var(--texto);border-radius:6px;padding:4px 10px;cursor:pointer}
+button.principal{background:var(--botao);color:var(--botao-txt);border-color:var(--botao);min-width:96px}
+button.sel{outline:2px solid var(--a);outline-offset:-1px}
+.grupo{display:flex;gap:3px}
+.prog{flex:1 1 180px;min-width:160px;align-self:center}
+.barra{height:5px;background:var(--grade);border-radius:3px;overflow:hidden}
+.barra>div{height:100%;background:var(--texto3);width:0}
+.dica{font-size:11px;color:var(--texto3)}
+.corpo{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:10px;min-height:0}
+.graficos{display:grid;grid-template-rows:2fr 1fr;gap:10px;min-height:0}
+.cartao{background:var(--cartao);border:1px solid var(--borda);border-radius:10px;padding:8px 12px}
+.graf{position:relative;display:flex;flex-direction:column;min-height:0}
+.cab{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.cab h3{font-size:13px;margin:0}
+.legenda{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:11px;color:var(--texto2);margin:2px 0 4px}
+.legenda span{display:inline-flex;align-items:center;gap:5px}
+.traco{width:16px;height:0;border-top:2px solid}
+.traco.tracejado{border-top-style:dashed}
+.marca{width:10px;height:10px;border-radius:2px;display:inline-block}
+.area{flex:1;min-height:0;position:relative}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.dicabox{position:absolute;pointer-events:none;background:var(--cartao);border:1px solid var(--borda);border-radius:6px;
+  padding:5px 7px;font-size:11px;box-shadow:0 2px 8px rgba(0,0,0,.15);display:none;white-space:nowrap;z-index:2;top:4px}
+.lado{display:flex;flex-direction:column;gap:10px;min-height:0;overflow:auto}
+.blocos{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.bloco h2{font-size:13px;margin:0 0 2px;display:flex;align-items:center;gap:6px}
+.num{font-size:20px;font-variant-numeric:tabular-nums;font-weight:600;line-height:1.2}
+.pequeno{font-size:11px;color:var(--texto2)}
+.sit{font-size:11px;margin-top:3px}
+.sit.ok{color:var(--ok)} .sit.alerta{color:var(--alerta)} .sit.erro{color:var(--erro)}
+.ensaio{display:flex;justify-content:space-between;gap:10px}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;font-size:12px}
+th,td{text-align:left;padding:3px 4px;border-bottom:1px solid var(--borda)}
+th{font-size:11px;color:var(--texto2);font-weight:500}
+td select{padding:1px 3px;font-size:11px}
+details{font-size:12px;color:var(--texto2)}
+details summary{cursor:pointer;color:var(--texto)}
+details code{font-size:11px}
+@media (max-width:900px){
+  .app{height:auto}
+  .corpo{grid-template-columns:1fr}
+  .graficos{grid-template-rows:auto auto}
+  .graf .area{height:260px;flex:none}
+  .graf.pot .area{height:140px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topo">
+    <h1>Teste do controle térmico</h1>
+    <label>Cenário
+      <select id="cenario">
+        <option value="sala">Nominal (paredes a 20 °C)</option>
+        <option value="segue">Paredes seguem a mesa</option>
+        <option value="pior_frio">Pior frio</option>
+      </select></label>
+    <label>Controle
+      <select id="lei">
+        <option value="lqi">LQI (escolhido)</option>
+        <option value="pi">PI</option>
+        <option value="liga_desliga">Liga/desliga</option>
+      </select></label>
+    <label>Meta (°C)<input id="ref" type="number" step="0.5" value="20"></label>
+    <label>Folga (± °C)<input id="hist" type="number" step="0.1" min="0" value="0.5"></label>
+    <button id="aplicar" title="Aplica os ajustes e recomeça o ensaio do zero">Aplicar e recomeçar</button>
+    <button id="play" class="principal">▶ Iniciar</button>
+    <div>
+      <div class="dica">Velocidade</div>
+      <div class="grupo" id="vel">
+        <button data-v="1">1×</button><button data-v="10">10×</button><button data-v="60">60×</button>
+        <button data-v="300">300×</button><button data-v="max">máx</button>
+      </div>
+    </div>
+    <div class="prog">
+      <div class="barra"><div id="progresso"></div></div>
+      <div class="dica" id="tempo">—</div>
+    </div>
+  </div>
+
+  <div class="corpo">
+    <div class="graficos">
+      <div class="cartao graf">
+        <div class="cab">
+          <h3>Temperaturas (°C)</h3>
+          <div class="grupo" id="escala">
+            <button data-e="meta">Perto da meta</button><button data-e="tudo">Ensaio todo</button>
+          </div>
+        </div>
+        <div class="legenda">
+          <span><i class="traco" style="border-color:var(--a)"></i>A medido</span>
+          <span><i class="traco tracejado" style="border-color:var(--a)"></i>Células A</span>
+          <span><i class="traco" style="border-color:var(--b)"></i>B medido</span>
+          <span><i class="traco tracejado" style="border-color:var(--b)"></i>Células B</span>
+          <span><i class="traco" style="border-color:var(--mesa)"></i>Mesa</span>
+          <span><i class="marca" style="background:var(--faixa);border:1px solid var(--borda)"></i>Faixa da meta</span>
+        </div>
+        <div class="area"><canvas id="gT"></canvas><div class="dicabox" id="dicaT"></div></div>
+      </div>
+      <div class="cartao graf pot">
+        <div class="cab"><h3>Potência dos aquecedores (W, média de 1 min)</h3>
+          <span class="dica">máximo 2,32 W cada (13,8 V em 82 Ω)</span></div>
+        <div class="legenda">
+          <span><i class="traco" style="border-color:var(--a)"></i>Aquecedor A</span>
+          <span><i class="traco" style="border-color:var(--b)"></i>Aquecedor B</span>
+        </div>
+        <div class="area"><canvas id="gP"></canvas><div class="dicabox" id="dicaP"></div></div>
+      </div>
+    </div>
+
+    <div class="lado">
+      <div class="blocos">
+        <div class="cartao bloco" id="cartaoA"></div>
+        <div class="cartao bloco" id="cartaoB"></div>
+      </div>
+      <div class="cartao ensaio">
+        <div><div class="pequeno">Mesa agora</div><div class="num" id="mesa">—</div></div>
+        <div style="text-align:right"><div class="pequeno">Energia gasta</div><div class="num" id="energia">—</div>
+          <div class="pequeno" id="energia2"></div></div>
+      </div>
+      <div class="cartao">
+        <div class="cab"><h3>Sondas (último ciclo)</h3></div>
+        <table>
+          <thead><tr><th>Nº</th><th>Bruta</th><th>Corrigida</th><th>Estado</th><th>Falha</th></tr></thead>
+          <tbody id="sondas"></tbody>
+        </table>
+        <div class="dica" style="margin-top:4px">"Falha" simula sonda solta, ruído no fio (CRC) ou o 85 °C de quando a sonda liga.</div>
+      </div>
+      <details class="cartao">
+        <summary>Como isto imita o Pi</summary>
+        <p>O programa do Pi (<code>firmware/tcs</code>) roda aqui sem mudanças. A cada ciclo, o satélite simulado
+        (modelo da etapa 3) escreve <code>w1/28-…/w1_slave</code> no formato do Linux; o programa lê esses arquivos
+        como leria <code>/sys/bus/w1/devices</code>, aplica a calibração, decide cada bloco e ajusta o PWM. Só o PWM
+        muda: vai para a memória e vira potência no modelo, em vez de ir para os pinos 18 e 19. Um ciclo = 5 s de
+        ensaio (2 s de espera + 0,75 s por sonda), como no Pi. Logs em <code>firmware/teste_local/logs/</code>.</p>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const cor = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+let A = [], est = null, hover = null, escala = "meta";
+try { escala = localStorage.getItem("escala") || "meta"; } catch(e) {}
+const fmt = (x, d=1) => x == null ? "—" : x.toFixed(d).replace(".", ",");
+const BLOCOS = {A:[1,2], B:[3,4]};
+
+async function cmd(c){ await fetch("/api/comando",{method:"POST",body:JSON.stringify(c)}); }
+
+$("#play").onclick = () => cmd({acao: est && est.rodando ? "pausar" : "iniciar"});
+$("#aplicar").onclick = async () => {
+  await cmd({acao:"reiniciar", cenario:$("#cenario").value, lei:$("#lei").value, ref:$("#ref").value, hist:$("#hist").value});
+  A = [];
+};
+document.querySelectorAll("#vel button").forEach(b => b.onclick = () => cmd({acao:"velocidade", valor:b.dataset.v}));
+document.querySelectorAll("#escala button").forEach(b => b.onclick = () => {
+  escala = b.dataset.e; try { localStorage.setItem("escala", escala); } catch(e) {} desenharTudo(); });
+
+async function atualizar(){
+  try{
+    const r = await fetch("/api/estado?desde=" + A.length);
+    est = await r.json();
+    if (est.total < A.length) A = []; else A.push(...est.amostras);
+    desenharTudo();
+  }catch(e){ $("#tempo").textContent = "Sem resposta do servidor (ele ainda está rodando?)"; }
+  setTimeout(atualizar, 400);
+}
+
+function sitClasse(t){ return t === "normal" ? "ok" : (/sem sonda|corte/.test(t) ? "erro" : "alerta"); }
+
+function desenharTudo(){
+  if (!est) return;
+  const u = A[A.length-1]; if (!u) return;
+  $("#play").textContent = est.rodando ? "⏸ Pausar" : (est.acabou ? "Terminou" : "▶ Iniciar");
+  document.querySelectorAll("#vel button").forEach(b => b.classList.toggle("sel", b.dataset.v === est.velocidade));
+  document.querySelectorAll("#escala button").forEach(b => b.classList.toggle("sel", b.dataset.e === escala));
+  const aj = est.ajustes;
+  if (!document.activeElement || !["SELECT","INPUT"].includes(document.activeElement.tagName)){
+    $("#cenario").value = aj.cenario; $("#lei").value = aj.lei; $("#ref").value = aj.ref; $("#hist").value = aj.hist;
+  }
+  $("#progresso").style.width = (100*u.t_min/est.dur_min) + "%";
+  $("#tempo").textContent = `${fmt(u.t_min,0)} de ${fmt(est.dur_min,0)} min de ensaio · ${A.length} ciclos` +
+     (est.acabou ? " · terminou" : "");
+  ["A","B"].forEach((b,i) => {
+    const sit = u.situacao[i], w = u.duty[i]*est.pmax;
+    $("#cartao"+b).innerHTML = `<h2><i class="marca" style="background:var(--${b.toLowerCase()})"></i>Bloco ${b}
+      <span class="pequeno">sondas ${BLOCOS[b].join(" e ")}</span></h2>
+      <div class="num">${fmt(u.medida[i],2)} °C</div>
+      <div class="pequeno">células ${fmt(u.celula[i],2)} °C</div>
+      <div class="pequeno">aquecedor <b>${fmt(u.duty[i]*100,0)} %</b> · ${fmt(w,2)} W</div>
+      <div class="sit ${sitClasse(sit)}">● ${sit}</div>`;
+  });
+  $("#mesa").textContent = fmt(u.mesa,1) + " °C";
+  const e = u.energia_Wh; $("#energia").textContent = fmt(e[0]+e[1],2) + " Wh";
+  $("#energia2").textContent = `A ${fmt(e[0],2)} · B ${fmt(e[1],2)}`;
+  const nomeFalha = {"":"nenhuma","desconectada":"solta","crc":"CRC","85":"85 °C","fria":"fora do canal (10 °C)"};
+  let h = "";
+  for (const n of [1,2,3,4]){
+    if (!(n in u.sonda)) continue;
+    const erro = u.erro[n], f = est.falha[n] || "";
+    const estado = erro ? `<span style="color:var(--erro)">${erro}</span>`
+      : (u.calibrada[n] ? "ok" : `<span style="color:var(--alerta)" title="Sem calibração: usa a leitura bruta">sem calib.</span>`);
+    h += `<tr><td>${n} <span class="dica">${n <= 2 ? "A" : "B"}</span></td><td>${fmt(u.bruta[n],2)}</td>
+      <td>${fmt(u.sonda[n],2)}</td><td>${estado}</td>
+      <td><select data-n="${n}">${Object.entries(nomeFalha).map(([k,v]) =>
+         `<option value="${k}" ${k===f?"selected":""}>${v}</option>`).join("")}</select></td></tr>`;
+  }
+  if (!document.activeElement || document.activeElement.tagName !== "SELECT" || !document.activeElement.dataset.n){
+    $("#sondas").innerHTML = h;
+    document.querySelectorAll("#sondas select").forEach(s => s.onchange = () => cmd({acao:"falha", sonda:s.dataset.n, tipo:s.value}));
+  }
+  grafico($("#gT"), "T"); grafico($("#gP"), "P");
+}
+
+function passoBonito(faixa, alvo){ const bruto = faixa/alvo, p = Math.pow(10, Math.floor(Math.log10(bruto)));
+  for (const k of [1,2,2.5,5,10]) if (k*p >= bruto) return k*p; return 10*p; }
+
+function grafico(cv, tipo){
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (W < 10 || H < 10) return;
+  cv.width = Math.round(W*dpr); cv.height = Math.round(H*dpr);
+  const g = cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,W,H);
+  const m = {l:38, r:10, t:6, b:22}, pw = W-m.l-m.r, ph = H-m.t-m.b;
+  const xmax = est ? est.dur_min : 1;
+  let ymin, ymax;
+  if (tipo === "T"){
+    if (escala === "meta" && est){ const r = est.ajustes.ref; ymin = r-6; ymax = r+6; } else { ymin = -15; ymax = 55; }
+  } else { ymin = 0; ymax = 2.5; }
+  const passo = passoBonito(ymax-ymin, Math.max(3, Math.floor(ph/40)));
+  const X = t => m.l + pw*t/xmax, Y = v => m.t + ph*(1-(v-ymin)/(ymax-ymin));
+  g.font = "11px system-ui, sans-serif"; g.fillStyle = cor("--texto3"); g.strokeStyle = cor("--grade"); g.lineWidth = 1;
+  for (let v = Math.ceil(ymin/passo)*passo; v <= ymax+1e-9; v += passo){
+    g.beginPath(); g.moveTo(m.l, Y(v)); g.lineTo(W-m.r, Y(v)); g.stroke();
+    g.textAlign = "right"; g.fillText(String(+v.toFixed(2)).replace(".",","), m.l-5, Y(v)+4);
+  }
+  const px = passoBonito(xmax, Math.max(3, Math.floor(pw/80)));
+  for (let t = 0; t <= xmax; t += px){ g.textAlign = "center"; g.fillText(t, X(t), H-m.b+14); }
+  g.textAlign = "left"; g.fillText("min", 2, H-m.b+14);
+  g.save(); g.beginPath(); g.rect(m.l, m.t, pw, ph); g.clip();
+  if (tipo === "T" && est){
+    const r = est.ajustes.ref, hh = est.ajustes.lei === "liga_desliga" ? Math.max(est.ajustes.hist, .25) : .5;
+    g.fillStyle = cor("--faixa"); g.fillRect(m.l, Y(r+hh), pw, Y(r-hh)-Y(r+hh));
+    if (ymin < 0){ g.strokeStyle = cor("--eixo"); g.beginPath(); g.moveTo(m.l, Y(0)); g.lineTo(W-m.r, Y(0)); g.stroke(); }
+  }
+  const linha = (f, c, larg=2, tracejado=false) => {
+    g.strokeStyle = c; g.lineWidth = larg; g.setLineDash(tracejado ? [5,4] : []); g.beginPath();
+    let ini = false;
+    for (const a of A){ const v = f(a); if (v == null){ ini = false; continue; }
+      const x = X(a.t_min), y = Y(v); if (!ini){ g.moveTo(x,y); ini = true; } else g.lineTo(x,y); }
+    g.stroke(); g.setLineDash([]);
+  };
+  if (tipo === "T"){
+    linha(a => a.mesa, cor("--mesa"), 1.5);
+    linha(a => a.celula[0], cor("--a"), 1.5, true); linha(a => a.celula[1], cor("--b"), 1.5, true);
+    linha(a => a.medida[0], cor("--a"), 2); linha(a => a.medida[1], cor("--b"), 2);
+  } else {
+    const pm = est ? est.pmax : 2.32, n = 12;   // 12 ciclos de 5 s = 1 min
+    for (const i of [0,1]){ let s = 0;
+      for (let k = 0; k < A.length; k++){ s += A[k].duty[i]; if (k >= n) s -= A[k-n].duty[i];
+        A[k]["_p"+i] = s/Math.min(k+1,n)*pm; } }
+    linha(a => a._p0, cor("--a"), 2); linha(a => a._p1, cor("--b"), 2);
+  }
+  g.restore();
+  if (tipo === "T" && escala === "meta" && est){
+    g.fillStyle = cor("--texto3"); g.textAlign = "left";
+    g.fillText("a mesa sai da escala: veja em \"Ensaio todo\"", m.l+6, m.t+12);
+  }
+  const caixa = tipo === "T" ? $("#dicaT") : $("#dicaP");
+  if (hover != null && A.length){
+    const k = Math.max(0, Math.min(A.length-1, hover)), a = A[k], x = X(a.t_min);
+    g.strokeStyle = cor("--texto3"); g.lineWidth = 1; g.beginPath(); g.moveTo(x, m.t); g.lineTo(x, m.t+ph); g.stroke();
+    caixa.style.display = "block";
+    caixa.innerHTML = tipo === "T"
+      ? `<b>${fmt(a.t_min,1)} min</b> · mesa ${fmt(a.mesa,1)} °C<br>A: medido ${fmt(a.medida[0],2)} · células ${fmt(a.celula[0],2)} °C<br>B: medido ${fmt(a.medida[1],2)} · células ${fmt(a.celula[1],2)} °C`
+      : `<b>${fmt(a.t_min,1)} min</b><br>A ${fmt(a._p0,2)} W · B ${fmt(a._p1,2)} W`;
+    caixa.style.left = (x + 12 + caixa.offsetWidth > W ? x - 12 - caixa.offsetWidth : x + 12) + "px";
+  } else caixa.style.display = "none";
+  cv._X = {m, pw, xmax};
+}
+
+["#gT","#gP"].forEach(id => {
+  const cv = $(id);
+  cv.addEventListener("mousemove", ev => {
+    if (!cv._X || !A.length) return;
+    const r = cv.getBoundingClientRect(), {m, pw, xmax} = cv._X;
+    const t = (ev.clientX - r.left - m.l)/pw*xmax;
+    let lo = 0, hi = A.length-1; while (lo < hi){ const md = (lo+hi)>>1; if (A[md].t_min < t) lo = md+1; else hi = md; }
+    hover = lo; desenharTudo();
+  });
+  cv.addEventListener("mouseleave", () => { hover = null; desenharTudo(); });
+});
+window.addEventListener("resize", desenharTudo);
+atualizar();
+</script>
+</body>
+</html>

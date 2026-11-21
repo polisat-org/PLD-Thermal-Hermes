@@ -1,0 +1,78 @@
+{
+ "ativa": true,
+ "_nota": "Calibração das sondas DS18B20 (padrão da equipe em sondas.json). Correção: T = (leitura - b) / a. Documentação completa: 02-sensor-bancada/CALIBRACAO.md. b = média da leitura bruta no patamar do gelo fundente (0,00 °C; a ~850 m de altitude o ponto do gelo muda só ~+0,0007 °C). a = 1: o ganho absoluto foi conferido contra um termômetro clínico (ver 'ganho' e 'incerteza').",
+ "versao": "2026-11-17",
+ "metodo": "offset no ponto do gelo (T02-05)",
+ "fontes": {
+  "gelo": "02-sensor-bancada/sessoes/20261108_183014 (patamar 18:30-18:33, 136 leituras por sonda, desvio-padrão <= 0,03 °C)",
+  "ar": "02-sensor-bancada/sessoes/20261108_180920 contra 2 termômetros de mercúrio (~18,85 °C). Os mesmos termômetros marcam +0,4 a +0,6 °C no gelo (18:26-18:41), então têm desvio próprio e não servem de referência melhor que ±0,5 °C: o ar não confirma nem nega um erro de ganho das sondas",
+  "clinico": "02-sensor-bancada/sessoes/20261108_192932 (água uniforme, 40,6 a 42,2 °C)",
+  "sonda4": "02-sensor-bancada/sessoes/20261117_050534 (gelo 130-310 s, 175 leituras, σ 0,015 °C; banho ~38 °C 890-1040 s contra as sondas 1-3: a medido 0,9989, adotado 1) — T02-12"
+ },
+ "sondas": {
+  "2800000048D377": {
+   "numero": 1,
+   "a": 1.0,
+   "b": -0.335
+  },
+  "2800000047E859": {
+   "numero": 2,
+   "a": 1.0,
+   "b": -0.248
+  },
+  "28000000480FF0": {
+   "numero": 3,
+   "a": 1.0,
+   "b": -0.373
+  },
+  "280000004801DC": {
+   "numero": 4,
+   "a": 1.0,
+   "b": -0.309
+  }
+ },
+ "ganho": "a = 1,000 ± 0,005 (T02-11, 08/11/2026, revisto): contra um termômetro clínico em água uniforme a 40–42 °C, descontados a hora da leitura (10 a 30 s antes da anotada) e o atraso das sondas, o desvio fica em −0,15 a +0,22 °C, a = 1,000 a 1,003. Entre 0 e 42 °C o ganho de cada sonda difere do da média em ≤ 0,07 % (F02-10). Sem referência perto de 20 °C nem abaixo de 0 °C.",
+ "incerteza": {
+  "b_C": 0.02,
+  "a": 0.005,
+  "resolucao_C": 0.0625,
+  "total_0C": 0.02,
+  "total_20C": 0.12,
+  "total_42C": 0.23,
+  "nota": "b ±0,02 °C é estimativa (pureza do banho de gelo e quantização de 0,0625 °C, média de ~136 leituras); a ±0,005 vem do clínico (±0,1 °C típico, hora da leitura e atrasos). Soma linear, conservadora."
+ },
+ "historico": [
+  {
+   "sonda": 4,
+   "rom": "280000004801DC",
+   "a": 1.0,
+   "b": -0.309,
+   "gelo": "20261117_050534",
+   "quente": null,
+   "avisos": [],
+   "data": "2026-11-17",
+   "janela_gelo_s": [
+    130,
+    310
+   ],
+   "conferencia_ganho": {
+    "sessao": "20261117_050534",
+    "janela_s": [
+     890,
+     1040
+    ],
+    "ref_sondas": [
+     1,
+     2,
+     3
+    ],
+    "ref_C": 37.953,
+    "dispersao_ref_C": 0.151,
+    "taxa_C_min": -0.44,
+    "a_medido": 0.9989,
+    "erro_com_a1_C": -0.042,
+    "decisao": "a = 1 (mesmo critério das sondas 1-3): 0,11 % < incerteza de a (±0,5 %) e 0,04 °C < dispersão das referências (0,15 °C)"
+   }
+  }
+ ]
+}
