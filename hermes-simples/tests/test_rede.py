@@ -80,12 +80,16 @@ class EnlaceTests(unittest.TestCase):
         ps = [q for _, q in self.e.quadros_desde(0)[1] if q[:1] == b"P"]
         self.assertEqual(len(ps), 1)
         self.assertEqual(ps[0][1], 3)
-        self.assertEqual(len(ps[0]), 2 + 3 * 36)
-        icao, lat, lon, alt, gs, trk, last_ms, cs = struct.unpack_from("<IfffffI8s", ps[0], 2)
+        self.assertEqual(len(ps[0]), 12 + 3 * 36)
+        n, seq, tx, msgs = struct.unpack_from("<BHII", ps[0], 1)
+        self.assertEqual((n, seq), (3, 0))
+        self.assertIn(tx, (105099, 105100))       # met_s 100 s + 5,1 s segurando o bloco (relogio do teste)
+        self.assertEqual(msgs, 0)                  # bloco de teste sem contador de mensagens (NaN)
+        icao, lat, lon, alt, gs, trk, last_ms, cs = struct.unpack_from("<IfffffI8s", ps[0], 12)
         self.assertEqual(icao, 0xE48000)
         self.assertEqual(last_ms, 98000)
         self.assertEqual(cs, b"TAM3050\0")
-        self.assertEqual(struct.unpack_from("8s", ps[0], 2 + 36 + 28)[0], b"TAM3051\0")
+        self.assertEqual(struct.unpack_from("8s", ps[0], 12 + 36 + 28)[0], b"TAM3051\0")
 
     def test_indicativo_igual_ao_obc(self):
         from hermes_simples.rede import indicativo

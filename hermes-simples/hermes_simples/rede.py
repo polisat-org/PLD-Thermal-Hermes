@@ -10,7 +10,9 @@ resultado como os bytes que o TT&C entregaria ao solo:
 
   - quadro 'H' = 'H' + trailer TCS de 32 B, para cada bloco com trailer valido (magic, versao, CRC).
     O main() deste modulo roda sem a parte termica (tcs=None): nao ha trailer e nao sai 'H';
-  - quadro 'P' = 'P' + n + n x 36 B, a cada 5 s durante a missao, a partir do ultimo bloco
+  - quadro 'P' = 'P' + n + seq (u16) + tx_met_ms (u32) + mensagens (u32) + n x 36 B, a cada 5 s
+    durante a missao, a partir do ultimo bloco (cabecalho igual ao da missionTask do OBC: seq dos 'P',
+    instante da transmissao no relogio de missao e mensagens decodificadas na missao)
     (mesmas regras de payload_downlink.c do OBC: ICAO inteiro de 24 bits, posicao na faixa,
     NaN onde falta dado, last_pos_met_ms = (met_s - seen_pos) x 1000 em float32, indicativo de 8 B
     copiado do flight ate o primeiro byte fora de 0x20..0x7E).
@@ -76,7 +78,7 @@ def _finito(v: float) -> bool:
 def compactar(planes: list[dict]) -> tuple[list[bytes], dict]:
     """pld_compact() do OBC: Plane_t (204 B) -> PlaneDown_t (36 B)."""
     out: list[bytes] = []
-    st = {"validos": 0, "vazios": 0, "descartados": 0}
+    st = {"validos": 0, "vazios": 0, "descartados": 0, "met_max_s": -1.0}
     for p in planes:
         icao = p["icaoID"]
         if icao == 0.0:
@@ -88,6 +90,8 @@ def compactar(planes: list[dict]) -> tuple[list[bytes], dict]:
         if not icao_ok or not pos_ok:
             st["descartados"] += 1
             continue
+        if _finito(p["met_s"]) and p["met_s"] > st["met_max_s"]:
+            st["met_max_s"] = p["met_s"]
         tem_pos = _finito(lat) and _finito(lon)
         nan = float("nan")
         met, seen = p["met_s"], p["seen_pos"]
@@ -120,8 +124,51 @@ def indicativo(flight) -> bytes:
     return bytes(out)
 
 
-def quadro_p(registros: list[bytes]) -> bytes:
-    return b"P" + bytes([len(registros)]) + b"".join(registros)
+def quadro_p(registros: list[bytes], seq: int = 0, tx_met_ms: int = 0, mensagens: int = 0) -> bytes:
+    """pld_build_frame() do OBC: 'P' n seq tx_met_ms mensagens + registros."""
+    return (b"P" + struct.pack("<BHII", len(registros), seq & 0xFFFF, tx_met_ms & 0xFFFFFFFF, mensagens & 0xFFFFFFFF)
+            + b"".join(registros))
+
+
+class ContadorMensagens:
+    """pld_msgs_update() do OBC: soma o aumento do contador "messages" do dump1090 de cada ICAO.
+    Tabela de 64 ICAOs, substituicao circular (igual ao C, para os numeros baterem)."""
+
+    TABELA = 64
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.icao: list[int] = []
+        self.msgs: list[int] = []
+        self.proximo = 0
+        self.total = 0
+
+    def update(self, planes: list[dict]) -> int:
+        for p in planes:
+            icao = p["icaoID"]
+            if icao == 0.0 or not (_finito(icao) and 1.0 <= icao <= ICAO_MAX and float(int(icao)) == icao):
+                continue
+            m = p.get("messages", float("nan"))
+            if not _finito(m) or m < 0.0 or m > 4.0e9:
+                continue
+            agora, icao = int(m), int(icao)
+            if icao in self.icao:
+                j = self.icao.index(icao)
+                self.total += agora - self.msgs[j] if agora >= self.msgs[j] else agora
+                self.msgs[j] = agora
+            else:
+                if len(self.icao) < self.TABELA:
+                    self.icao.append(icao)
+                    self.msgs.append(agora)
+                else:
+                    j = self.proximo
+                    self.proximo = (self.proximo + 1) % self.TABELA
+                    self.icao[j], self.msgs[j] = icao, agora
+                self.total += agora
+        self.total &= 0xFFFFFFFF
+        return self.total
 
 
 def trailer_valido(raw: bytes) -> bool:
@@ -142,6 +189,10 @@ class EnlaceRede:
         self.missao = False          # pedido do solo (bit Mission do ultimo telecomando)
         self._registros: list[bytes] = []
         self._tem_dados = False
+        self._seq_p = 0
+        self._mensagens = ContadorMensagens()
+        self._met_bloco = -1.0            # maior met_s do ultimo bloco
+        self._t_bloco = 0.0               # quando o bloco chegou (relogio local)
         self._ultimo_downlink = 0.0
         self.frames = 0
         self.bytes_sent = 0
@@ -168,7 +219,11 @@ class EnlaceRede:
         blocos, trailer = data[:BUFFER_SIZE], data[BUFFER_SIZE:BUFFER_SIZE + TCS_SIZE]
         with self._lock:
             if len(blocos) == BUFFER_SIZE and self.missao:
-                self._registros, self.ultimo_stats = compactar(unpack_planes(blocos))
+                planes = unpack_planes(blocos)
+                self._registros, self.ultimo_stats = compactar(planes)
+                self._met_bloco = self.ultimo_stats["met_max_s"]
+                self._t_bloco = self.relogio()
+                self._mensagens.update(planes)
                 self._tem_dados = True
             if trailer:
                 if trailer_valido(trailer):
@@ -191,6 +246,8 @@ class EnlaceRede:
             if liga and not self.missao:
                 self._tem_dados = False
                 self._ultimo_downlink = self.relogio()
+                self._mensagens.reset()
+                self._met_bloco = -1.0
             self.missao = liga
             self._cmds.append(liga)
         return 0
@@ -204,7 +261,11 @@ class EnlaceRede:
         with self._lock:
             agora = self.relogio()
             if self.missao and self._tem_dados and agora - self._ultimo_downlink >= DOWNLINK_PERIODO_S:
-                self._publica(quadro_p(self._registros))
+                tx = 0
+                if self._met_bloco >= 0.0:   # (uint32_t)(met * 1000.0f) + tempo que segurou o bloco
+                    tx = int(f32(self._met_bloco * 1000.0)) + int((agora - self._t_bloco) * 1000.0)
+                self._publica(quadro_p(self._registros, self._seq_p, tx, self._mensagens.total))
+                self._seq_p = (self._seq_p + 1) & 0xFFFF
                 self._ultimo_downlink = agora
 
     def _downlink_loop(self) -> None:
