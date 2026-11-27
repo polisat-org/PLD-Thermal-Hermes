@@ -45,6 +45,8 @@ class Config:
 
     # Envio e evidencia local
     SEND_PERIOD_S: float = 5.0
+    # LIGAR pedido mas o start falhou (SDR/dump1090): tenta de novo a cada START_RETRY_S
+    START_RETRY_S: float = 5.0
     # Trailer termico do TCS no fim de cada bloco (4080 + 32 B, a cada 5 s, inclusive com a missao desligada).
     # O OBC (branch payload_integration) espera 4112 B. Desligar volta ao protocolo antigo de 4080 B.
     TCS_TRAILER: bool = True

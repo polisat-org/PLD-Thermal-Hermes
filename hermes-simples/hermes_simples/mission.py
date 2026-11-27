@@ -4,9 +4,12 @@ O log CSV e apenas local (arquivo), nunca vai na UART.
 """
 from __future__ import annotations
 
+import logging
 import time
 
 from .plane import pack_planes
+
+log = logging.getLogger(__name__)
 
 
 class Mission:
@@ -22,6 +25,8 @@ class Mission:
         self.clock = clock or time.monotonic
         self.sleep = sleep or time.sleep
         self.active = False
+        self.wanted = False   # ultimo comando do OBC foi LIGAR (a missao deve estar rodando)
+        self._decoder_caiu = False
         self.sends = 0
         # Com o TCS (controle termico das baterias), o bloco sai a cada envio mesmo com a missao
         # desligada (avioes zerados) e leva no fim o trailer termico de 32 B (tcs_link.py).
@@ -59,12 +64,15 @@ class Mission:
     # ------------------------------------------------------------- missao
     def start(self) -> bool:
         if not self.gpio.set_sdr(True):
+            log.warning("missao nao iniciou: saida do SDR nao ligou (tempo minimo desligado?)")
             return False
         ready = self.decoder.start()
         if ready is False:
             # dump1090 nao ficou pronto: nao finge que a missao comecou.
             self.decoder.stop()
             self.gpio.set_sdr(False)
+            log.error("missao nao iniciou: decodificador ADS-B nao ficou pronto; nova tentativa em %.0f s",
+                      self.cfg.START_RETRY_S)
             return False
         self.aircraft.clear()
         self.aircraft.set_mission_start()
@@ -72,6 +80,7 @@ class Mission:
         if self.mission_log is not None:
             self.mission_log.start()
         self.active = True
+        log.info("missao iniciada")
         return True
 
     def stop(self) -> None:
@@ -87,11 +96,15 @@ class Mission:
             )
         self.aircraft.clear()
         self.active = False
+        if was_active:
+            log.info("missao parada")
 
     def run(self, duration: float | None = None) -> None:
         t0 = self.clock()
         next_poll = 0.0
         next_send = 0.0
+        next_retry = 0.0
+        next_check = 0.0
         while duration is None or (self.clock() - t0) < duration:
             # Comandos do OBC pela UART (A5 5A cmd ~cmd); o ultimo do lote vale.
             read_commands = getattr(self.uart, "read_commands", None)
@@ -99,14 +112,37 @@ class Mission:
             uart_off = bool(cmds) and cmds[-1] is False
             uart_on = bool(cmds) and cmds[-1] is True
             if uart_off:
+                self.wanted = False
                 if self.active:
                     self.stop()
-            elif uart_on and not self.active:
-                self.start()
-                next_poll = 0.0
-                next_send = 0.0
+            elif uart_on:
+                self.wanted = True
+                next_retry = 0.0
 
             now = self.clock()
+            # LIGAR pedido e missao parada (inclusive se o start anterior falhou, ex.: SDR caiu do USB):
+            # tenta de novo a cada START_RETRY_S, em vez de ficar parada ate o proximo comando.
+            if self.wanted and not self.active and now >= next_retry:
+                if self.start():
+                    next_poll = 0.0
+                    next_send = 0.0
+                else:
+                    next_retry = self.clock() + self.cfg.START_RETRY_S
+                now = self.clock()
+            # dump1090 morreu no meio da missao (ex.: SDR perdeu o USB): tenta reabrir.
+            # O DecoderProcess limita a taxa de reinicio (restart_backoff_s).
+            is_alive = getattr(self.decoder, "is_alive", None)
+            if self.active and is_alive is not None and getattr(self.decoder, "enabled", True) \
+                    and now >= next_check and not is_alive():
+                if not self._decoder_caiu:   # um aviso por queda; as novas tentativas ficam quietas
+                    log.error("decodificador ADS-B parou no meio da missao; tentando reabrir a cada %.0f s",
+                              self.cfg.START_RETRY_S)
+                self._decoder_caiu = True
+                if self.decoder.start():
+                    log.info("decodificador ADS-B reaberto")
+                    self._decoder_caiu = False
+                next_check = self.clock() + self.cfg.START_RETRY_S
+                now = self.clock()
             if self.active and now >= next_poll:
                 self.source.poll_once()
                 next_poll = now + self.cfg.JSON_POLL_S

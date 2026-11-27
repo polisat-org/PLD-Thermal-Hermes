@@ -5,7 +5,10 @@ import unittest
 import urllib.request
 
 from hermes_simples.plane import BUFFER_SIZE, empty_slot, new_plane, pack_planes
-from hermes_simples.rede import EnlaceRede, servidor_http, trailer_valido
+import logging
+import threading
+
+from hermes_simples.rede import EnlaceRede, _ParaEnlace, servidor_http, trailer_valido, vigia
 from hermes_simples.tcs_link import crc16_ccitt
 
 
@@ -90,6 +93,60 @@ class EnlaceTests(unittest.TestCase):
         ultimo, qs = self.e.quadros_desde(1)
         self.assertEqual(ultimo, 3)
         self.assertEqual([k for k, _ in qs], [2, 3])
+
+
+class EventosTests(unittest.TestCase):
+    def test_log_vira_evento(self):
+        e = EnlaceRede()
+        lg = logging.getLogger("hermes_simples.teste")
+        h = _ParaEnlace(e)
+        lg.addHandler(h)
+        try:
+            lg.error("decodificador caiu")
+            lg.debug("nao vai")
+        finally:
+            lg.removeHandler(h)
+        ultimo, evs = e.eventos_desde(0)
+        self.assertEqual(ultimo, 1)
+        self.assertEqual(evs, [{"seq": 1, "nivel": "erro", "texto": "decodificador caiu"}])
+        self.assertEqual(e.eventos_desde(1)[1], [])
+        self.assertEqual(len(e.eventos_desde(99)[1]), 1)   # ponte de outra execucao: recomeca
+
+    def test_vigia_avisa_sdr_fora_do_usb_uma_vez(self):
+        class M:
+            active, wanted = True, True
+        class D:
+            def is_alive(self):
+                return True
+        class S:
+            errors = 0
+        e = EnlaceRede()
+        h = _ParaEnlace(e)
+        pkg = logging.getLogger("hermes_simples")
+        nivel_antigo = pkg.level
+        pkg.setLevel(logging.INFO)
+        pkg.addHandler(h)
+        usb = iter([True, False, False, True])
+        parar = threading.Event()
+        chamadas = []
+        def checa():
+            v = next(usb)
+            chamadas.append(v)
+            if len(chamadas) == 4:
+                parar.set()
+            return v
+        try:
+            import hermes_simples.rede as rede
+            antigo, rede.VIGIA_PERIODO_S = rede.VIGIA_PERIODO_S, 0.001
+            vigia(e, M(), D(), S(), False, parar, checa_usb=checa)
+        finally:
+            rede.VIGIA_PERIODO_S = antigo
+            pkg.removeHandler(h)
+            pkg.setLevel(nivel_antigo)
+        textos = [x["texto"] for x in e.eventos_desde(0)[1]]
+        self.assertEqual(sum("nao aparece no USB" in t for t in textos), 1)
+        self.assertEqual(sum("de volta no USB" in t for t in textos), 1)
+        self.assertTrue(e.saude["sdr_usb"])
 
 
 class HttpTests(unittest.TestCase):

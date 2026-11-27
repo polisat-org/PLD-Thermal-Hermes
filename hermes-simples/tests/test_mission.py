@@ -196,6 +196,30 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(log.starts, 0)
         self.assertEqual(uart.data, [])
 
+    def test_failed_start_retries_until_ok(self):
+        # SDR caiu do USB: o primeiro start falha; com o LIGAR valendo, tenta de novo sozinho.
+        mission, gpio, uart, _, decoder, aircraft, log = self.make(on=True, decoder_ready=False)
+        mission.cfg = replace(mission.cfg, START_RETRY_S=0.005)
+        mission.run(0.02)
+        self.assertFalse(mission.active)
+        self.assertGreaterEqual(decoder.starts, 2)
+        decoder.ready = True
+        mission.run(0.02)
+        self.assertTrue(mission.active)
+        self.assertTrue(uart.data)
+
+    def test_off_cancels_retry(self):
+        mission, gpio, uart, _, decoder, aircraft, log = self.make(on=True, decoder_ready=False)
+        mission.cfg = replace(mission.cfg, START_RETRY_S=0.005)
+        mission.run(0.01)
+        uart._cmds = [False]
+        mission.run(0.005)
+        n = decoder.starts
+        decoder.ready = True
+        mission.run(0.02)
+        self.assertEqual(decoder.starts, n)
+        self.assertFalse(mission.active)
+
     def test_sdr_minimum_off_time(self):
         cfg = replace(Config(), SDR_MIN_OFF_S=60)
         gpio = Gpio(cfg, simulate=True)

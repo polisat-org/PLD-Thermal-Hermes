@@ -23,12 +23,18 @@ HTTP (sem autenticacao: use so na rede local da bancada):
                             o OBC descarta o flight[8] ao compactar, entao isto so existe neste modo.
   POST /telecomando      <- {"mascara": 0..15}  -> {"status": 0}
   GET  /estado           -> resumo (missao, quadros, avioes)
+
+Erros e avisos (so neste modo; nao passam pelo OBC/TT&C): GET /quadros?desde=N&ev=M tambem traz
+"eventos" (seq > M: {"seq", "nivel", "texto"}, de logging do hermes_simples e da vigia de SDR/decodificador)
+e "estado" (pedido, ativo, sdr_usb, decodificador, erros_json), para a ground station mostrar.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
+from pathlib import Path
 import struct
 import threading
 import time
@@ -51,6 +57,10 @@ TCS_SIZE = 32
 DOWNLINK_PERIODO_S = 5.0        # PLD_DOWNLINK_MS do OBC
 ICAO_MAX = 16777215.0
 MAX_QUADROS = 500               # fila de quadros guardados para a ponte buscar
+MAX_EVENTOS = 300
+VIGIA_PERIODO_S = 2.0
+SDR_USB_IDS = {("0bda", "2838"), ("0bda", "2832")}   # RTL2832U (RTL-SDR)
+log = logging.getLogger("hermes_simples.rede")
 _F32 = struct.Struct("<f")
 _DOWN = struct.Struct("<IfffffI")   # PlaneDown_t, 28 B
 
@@ -129,6 +139,9 @@ class EnlaceRede:
         self.bytes_sent = 0
         self.tcs_ruins = 0
         self.ultimo_stats: dict = {}
+        self._eventos: deque[tuple[int, str, str]] = deque(maxlen=MAX_EVENTOS)
+        self._ev_seq = 0
+        self.saude: dict = {}        # preenchido pela vigia
         self.parar = threading.Event()
         self._thread = threading.Thread(target=self._downlink_loop, daemon=True)
 
@@ -190,6 +203,18 @@ class EnlaceRede:
         while not self.parar.wait(0.1):
             self.passo()
 
+    # ---- erros e avisos para o solo
+    def evento(self, nivel: str, texto: str) -> None:
+        with self._lock:
+            self._ev_seq += 1
+            self._eventos.append((self._ev_seq, nivel, texto))
+
+    def eventos_desde(self, seq: int) -> tuple[int, list[dict]]:
+        with self._lock:
+            if seq > self._ev_seq:
+                seq = 0   # a ponte veio de uma execucao anterior: manda tudo o que tem
+            return self._ev_seq, [{"seq": k, "nivel": n, "texto": t} for k, n, t in self._eventos if k > seq]
+
     def extras(self, seq: int) -> dict:
         with self._lock:
             return self._extras.get(seq, {})
@@ -202,6 +227,68 @@ class EnlaceRede:
         primeiro = self._quadros[0][0]
         for k in [k for k in self._extras if k < primeiro]:
             del self._extras[k]
+
+
+class _ParaEnlace(logging.Handler):
+    """Copia os logs do hermes_simples (INFO ou mais) para os eventos que a ground station busca."""
+
+    NIVEIS = {logging.INFO: "info", logging.WARNING: "aviso", logging.ERROR: "erro", logging.CRITICAL: "erro"}
+
+    def __init__(self, enlace: EnlaceRede) -> None:
+        super().__init__(logging.INFO)
+        self.enlace = enlace
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            texto = record.getMessage()
+            if record.exc_info and record.exc_info[1] is not None:
+                texto += f" ({type(record.exc_info[1]).__name__}: {record.exc_info[1]})"
+            self.enlace.evento(self.NIVEIS.get(record.levelno, "info"), texto)
+        except Exception:  # noqa: BLE001 - log nunca derruba a missao
+            pass
+
+
+def sdr_no_usb(base: Path = Path("/sys/bus/usb/devices")) -> bool:
+    for d in base.glob("*"):
+        try:
+            ids = ((d / "idVendor").read_text().strip(), (d / "idProduct").read_text().strip())
+        except OSError:
+            continue
+        if ids in SDR_USB_IDS:
+            try:   # listado mas desautorizado (desconectado pelo kernel) nao serve
+                return (d / "authorized").read_text().strip() != "0"
+            except OSError:
+                return True
+    return False
+
+
+def vigia(enlace: EnlaceRede, mission: Mission, decoder: Decoder, source, simulado: bool,
+          parar: threading.Event, checa_usb=sdr_no_usb) -> None:
+    """A cada 2 s: SDR no USB, decodificador vivo, leitura do aircraft.json. Avisa nas mudancas."""
+    antes: dict = {}
+    erros_antes = int(getattr(source, "errors", 0) or 0)
+    while True:
+        usb = None if simulado else checa_usb()
+        vivo = None if simulado or not mission.active else decoder.is_alive()
+        erros = int(getattr(source, "errors", 0) or 0)
+        json_ok = None if not mission.active else erros == erros_antes
+        erros_antes = erros
+        agora = {"pedido": mission.wanted, "ativo": mission.active, "sdr_usb": usb,
+                 "decodificador": vivo, "erros_json": erros}
+        if usb is False and antes.get("sdr_usb") is not False:
+            log.error("SDR nao aparece no USB do Pi (cabo/adaptador OTG?)")
+        elif usb and antes.get("sdr_usb") is False:
+            log.info("SDR de volta no USB")
+        if json_ok is False and antes.get("_json_ok") is not False:
+            log.warning("falha ao ler o aircraft.json do decodificador (%d erros ate agora)", erros)
+        elif json_ok and antes.get("_json_ok") is False:
+            log.info("leitura do aircraft.json normalizada")
+        if mission.wanted and not mission.active and antes.get("ativo") is not False and antes.get("pedido"):
+            log.warning("missao pedida pelo solo, mas parada (tentando iniciar)")
+        enlace.saude = agora
+        antes = {**agora, "_json_ok": json_ok}
+        if parar.wait(VIGIA_PERIODO_S):
+            return
 
 
 def servidor_http(enlace: EnlaceRede, porta: int) -> ThreadingHTTPServer:
@@ -221,11 +308,17 @@ def servidor_http(enlace: EnlaceRede, porta: int) -> ThreadingHTTPServer:
                     desde = int(parse_qs(u.query).get("desde", ["0"])[0])
                 except ValueError:
                     desde = 0
+                try:
+                    ev = int(parse_qs(u.query).get("ev", ["0"])[0])
+                except ValueError:
+                    ev = 0
                 ultimo, qs = enlace.quadros_desde(desde)
-                self._json(200, {"ultimo": ultimo, "quadros": [{"seq": k, "hex": q.hex(), **enlace.extras(k)} for k, q in qs]})
+                ultimo_ev, evs = enlace.eventos_desde(ev)
+                self._json(200, {"ultimo": ultimo, "quadros": [{"seq": k, "hex": q.hex(), **enlace.extras(k)} for k, q in qs],
+                                 "ultimo_evento": ultimo_ev, "eventos": evs, "estado": enlace.saude})
             elif u.path == "/estado":
                 self._json(200, {"missao": enlace.missao, "blocos": enlace.frames, "tcs_ruins": enlace.tcs_ruins,
-                                 "ultimo_quadro": enlace._seq, "avioes": enlace.ultimo_stats})
+                                 "ultimo_quadro": enlace._seq, "avioes": enlace.ultimo_stats, **enlace.saude})
             else:
                 self._json(404, {"erro": "rota desconhecida"})
 
@@ -265,6 +358,12 @@ def main(argv: list[str] | None = None) -> int:
     clock = time.monotonic
     gpio = Gpio(cfg, simulate=args.sim)
     enlace = EnlaceRede(clock)
+    pkg_log = logging.getLogger("hermes_simples")
+    pkg_log.setLevel(logging.INFO)
+    pkg_log.addHandler(_ParaEnlace(enlace))
+    console = logging.StreamHandler()
+    console.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    pkg_log.addHandler(console)   # tambem no journalctl
     enlace.open()
     aircraft = AircraftList(cfg.NUM_AIRCRAFT, max_age_s=cfg.STALE_MAX_AGE_S,
                             max_missing_polls=cfg.MAX_MISSING_POLLS, clock=clock)
@@ -275,12 +374,19 @@ def main(argv: list[str] | None = None) -> int:
     # Sem a parte termica: nenhum trailer TCS (logo nenhum quadro 'H'); so os avioes, durante a missao.
     mission = Mission(cfg, gpio, enlace, aircraft, source, decoder, mission_log=mission_log, clock=clock, tcs=None)
     srv = servidor_http(enlace, args.http_porta)
+    threading.Thread(target=vigia, args=(enlace, mission, decoder, source, args.sim, enlace.parar),
+                     daemon=True).start()
+    log.info("HERMES Simples (rede) no ar%s", " com avioes simulados" if args.sim else "")
     print(f"HERMES Simples (rede): http://0.0.0.0:{args.http_porta}  envio={cfg.SEND_PERIOD_S}s sim={args.sim}",
           flush=True)
     try:
         mission.run(args.duration)
     except KeyboardInterrupt:
         pass
+    except Exception:
+        log.exception("erro inesperado; o servico vai reiniciar")
+        time.sleep(1.5)   # da tempo de a ponte buscar o evento
+        raise
     finally:
         mission.stop()
         enlace.close()
