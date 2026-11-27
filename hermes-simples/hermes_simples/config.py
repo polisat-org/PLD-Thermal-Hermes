@@ -9,8 +9,6 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Config:
     # GPIO
-    GPIO_ON: int = 27       # wPi 2  - pino fisico 13 - missao LIGAR
-    GPIO_OFF: int = 22      # wPi 3  - pino fisico 15 - missao DESLIGAR
     GPIO_SDR: int = 17      # wPi 0  - pino fisico 11 - alimentacao do SDR
     SDR_ACTIVE_HIGH: bool = True
     GPIO_POLL_S: float = 0.05

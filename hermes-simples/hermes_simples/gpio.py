@@ -1,4 +1,7 @@
-"""GPIO via pigpio. ON/OFF sao entradas; SDR e uma saida."""
+"""GPIO via pigpio: so a saida de alimentacao do SDR.
+
+Ligar/desligar a missao e so pela UART (A5 5A cmd ~cmd): a PCB da carga util nao liga os GPIOs 27/22
+ao barramento, e o OBC nao usa as linhas PL_START/PL_END."""
 from __future__ import annotations
 
 import time
@@ -9,8 +12,6 @@ class Gpio:
         self.cfg = cfg
         self.simulate = simulate
         self.pi = None
-        self._sim_on = False
-        self._sim_off = False
         self._sim_sdr = False
         self._last_off = -1e9
         if not simulate:
@@ -19,21 +20,8 @@ class Gpio:
             self.pi = pigpio.pi()
             if not self.pi.connected:
                 raise RuntimeError("pigpiod nao esta rodando (sudo systemctl start pigpiod)")
-            for pin in (cfg.GPIO_ON, cfg.GPIO_OFF):
-                self.pi.set_mode(pin, pigpio.INPUT)
-                self.pi.set_pull_up_down(pin, pigpio.PUD_DOWN)
             self.pi.set_mode(cfg.GPIO_SDR, pigpio.OUTPUT)
             self._write(False)
-
-    def on_pressed(self) -> bool:
-        return self._sim_on if self.simulate else bool(self.pi.read(self.cfg.GPIO_ON))
-
-    def off_pressed(self) -> bool:
-        return self._sim_off if self.simulate else bool(self.pi.read(self.cfg.GPIO_OFF))
-
-    def set_sim_inputs(self, on: bool = False, off: bool = False) -> None:
-        self._sim_on = bool(on)
-        self._sim_off = bool(off)
 
     def sdr_on(self) -> bool:
         if self.simulate:

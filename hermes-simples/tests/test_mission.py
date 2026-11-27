@@ -10,17 +10,9 @@ from hermes_simples.uart import UartSender
 
 
 class FakeGpio:
-    def __init__(self, on=False, off=False):
-        self._on = on
-        self._off = off
+    def __init__(self):
         self.sdr = False
         self.ok = True
-
-    def on_pressed(self):
-        return self._on
-
-    def off_pressed(self):
-        return self._off
 
     def set_sdr(self, on):
         self.sdr = bool(on) and self.ok
@@ -31,8 +23,14 @@ class FakeGpio:
 
 
 class FakeUart:
-    def __init__(self):
+    """Comandos do OBC (True = LIGAR, False = DESLIGAR) entregues no primeiro read_commands()."""
+    def __init__(self, cmds=()):
         self.data = []
+        self._cmds = list(cmds)
+
+    def read_commands(self):
+        cmds, self._cmds = self._cmds, []
+        return cmds
 
     def send(self, payload):
         self.data.append(payload)
@@ -115,8 +113,8 @@ def fast_cfg():
 
 class MissionTests(unittest.TestCase):
     def make(self, on=False, off=False, decoder_ready=True):
-        gpio = FakeGpio(on, off)
-        uart = FakeUart()
+        gpio = FakeGpio()
+        uart = FakeUart(([True] if on else []) + ([False] if off else []))
         source = FakeSource()
         decoder = FakeDecoder(ready=decoder_ready)
         aircraft = FakeAircraft()

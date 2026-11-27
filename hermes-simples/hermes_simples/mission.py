@@ -94,15 +94,14 @@ class Mission:
         next_send = 0.0
         while duration is None or (self.clock() - t0) < duration:
             # Comandos do OBC pela UART (A5 5A cmd ~cmd); o ultimo do lote vale.
-            # Os GPIOs continuam aceitos como alternativa. OFF tem prioridade sobre ON.
             read_commands = getattr(self.uart, "read_commands", None)
             cmds = read_commands() if read_commands is not None else []
             uart_off = bool(cmds) and cmds[-1] is False
             uart_on = bool(cmds) and cmds[-1] is True
-            if uart_off or self.gpio.off_pressed():
+            if uart_off:
                 if self.active:
                     self.stop()
-            elif (uart_on or self.gpio.on_pressed()) and not self.active:
+            elif uart_on and not self.active:
                 self.start()
                 next_poll = 0.0
                 next_send = 0.0

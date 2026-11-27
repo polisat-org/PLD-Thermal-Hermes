@@ -74,8 +74,6 @@ def main(argv: list[str] | None = None) -> int:
 
     clock = time.monotonic
     gpio = Gpio(cfg, simulate=args.sim)
-    if args.sim and args.force_on:
-        gpio.set_sim_inputs(on=True)
     uart = UartSender(cfg.UART_PORT, cfg.UART_BAUD)
     if not args.no_uart:
         uart.open()
@@ -102,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
           f"envio={cfg.SEND_PERIOD_S}s sim={args.sim} avioes={sim_count}", flush=True)
     if mission_log.enabled:
         print(f"log de missao: {cfg.MISSION_LOG_PATH}", flush=True)
+    if args.sim and args.force_on:
+        mission.start()   # simulacao: comeca ja, sem esperar o comando do OBC
     try:
         mission.run(args.duration)
     except KeyboardInterrupt:

@@ -1,0 +1,32 @@
+# HERMES Simples com saída HTTP (bancada sem OBC/TT&C). Mesma missão do hermes-simples.service,
+# sem a parte térmica (só aviões), mas os quadros vão para a rede (porta 8080) e o telecomando vem por HTTP.
+# Os dois usam o SDR: só um pode rodar de cada vez (Conflicts= abaixo).
+#
+# Instalar:  sudo cp services/hermes-simples-rede.service /etc/systemd/system/
+#            sudo systemctl daemon-reload
+#            sudo systemctl disable --now hermes-simples
+#            sudo systemctl enable --now hermes-simples-rede
+# Voltar ao voo (UART):
+#            sudo systemctl disable --now hermes-simples-rede
+#            sudo systemctl enable --now hermes-simples
+
+[Unit]
+Description=HERMES Simples - payload ADS-B com saida HTTP (bancada)
+After=pigpiod.service network-online.target
+Wants=pigpiod.service network-online.target
+Conflicts=hermes-simples.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hermes-simples
+RuntimeDirectory=dump1090-fa
+RuntimeDirectoryMode=0755
+Environment=PYTHONPATH=/opt/hermes-simples
+Environment=DECODER_LOG_PATH=/home/polisat/hermes-simples-decoder.log
+ExecStart=/usr/bin/python3 -m hermes_simples.rede --http-porta 8080 --log /home/polisat/hermes-simples-mission.csv
+ExecStopPost=/usr/bin/python3 /opt/hermes-simples/scripts/safe_off.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

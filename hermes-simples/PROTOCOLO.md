@@ -160,7 +160,7 @@ use `--log CAMINHO`.
 | Envio do payload | a cada 5 s enquanto a missão está ligada |
 | Downlink OBC | a cada 10 s (decisão do OBC) |
 | LIGAR/DESLIGAR | pela UART: `A5 5A 01 FE` / `A5 5A 00 FF` (OBC PB10 → pino 10) |
-| GPIO ON / OFF (alternativa, não usada com o OBC) | BCM27 pino 13 / BCM22 pino 15 |
+| Ligar / desligar a missão | só pela UART (`A5 5A cmd ~cmd`); os GPIOs ON/OFF foram removidos |
 | GPIO SDR | wPi 0 / BCM17 / pino 11 |
 | Duração de teste | 10 min, até 20 aviões simultâneos |
 
