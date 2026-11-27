@@ -10,17 +10,16 @@ resultado como os bytes que o TT&C entregaria ao solo:
 
   - quadro 'H' = 'H' + trailer TCS de 32 B, para cada bloco com trailer valido (magic, versao, CRC).
     O main() deste modulo roda sem a parte termica (tcs=None): nao ha trailer e nao sai 'H';
-  - quadro 'P' = 'P' + n + n x 28 B, a cada 5 s durante a missao, a partir do ultimo bloco
+  - quadro 'P' = 'P' + n + n x 36 B, a cada 5 s durante a missao, a partir do ultimo bloco
     (mesmas regras de payload_downlink.c do OBC: ICAO inteiro de 24 bits, posicao na faixa,
-    NaN onde falta dado, last_pos_met_ms = (met_s - seen_pos) x 1000 em float32).
+    NaN onde falta dado, last_pos_met_ms = (met_s - seen_pos) x 1000 em float32, indicativo de 8 B
+    copiado do flight ate o primeiro byte fora de 0x20..0x7E).
 
 Telecomando (mascara de 4 bits do solo): so o bit Mission (0x01) tem efeito aqui, como no OBC
 para o payload: 1 = LIGAR, 0 = DESLIGAR.
 
 HTTP (sem autenticacao: use so na rede local da bancada):
-  GET  /quadros?desde=N  -> {"ultimo": M, "quadros": [{"seq": k, "hex": "...", "indicativos": {...}}]}
-                            (quadros com seq > N). "indicativos" (ICAO hex -> callsign) so vem nos 'P':
-                            o OBC descarta o flight[8] ao compactar, entao isto so existe neste modo.
+  GET  /quadros?desde=N  -> {"ultimo": M, "quadros": [{"seq": k, "hex": "..."}]}  (quadros com seq > N)
   POST /telecomando      <- {"mascara": 0..15}  -> {"status": 0}
   GET  /estado           -> resumo (missao, quadros, avioes)
 
@@ -62,7 +61,7 @@ VIGIA_PERIODO_S = 2.0
 SDR_USB_IDS = {("0bda", "2838"), ("0bda", "2832")}   # RTL2832U (RTL-SDR)
 log = logging.getLogger("hermes_simples.rede")
 _F32 = struct.Struct("<f")
-_DOWN = struct.Struct("<IfffffI")   # PlaneDown_t, 28 B
+_DOWN = struct.Struct("<IfffffI8s")   # PlaneDown_t, 36 B (payload_downlink.h do OBC)
 
 
 def f32(x: float) -> float:
@@ -75,9 +74,9 @@ def _finito(v: float) -> bool:
 
 
 def compactar(planes: list[dict]) -> tuple[list[bytes], dict]:
-    """pld_compact() do OBC: Plane_t (204 B) -> PlaneDown_t (28 B)."""
+    """pld_compact() do OBC: Plane_t (204 B) -> PlaneDown_t (36 B)."""
     out: list[bytes] = []
-    st = {"validos": 0, "vazios": 0, "descartados": 0, "indicativos": {}}
+    st = {"validos": 0, "vazios": 0, "descartados": 0}
     for p in planes:
         icao = p["icaoID"]
         if icao == 0.0:
@@ -95,9 +94,6 @@ def compactar(planes: list[dict]) -> tuple[list[bytes], dict]:
         last_ms = 0
         if tem_pos and _finito(met) and _finito(seen) and met >= 0.0 and seen >= 0.0 and seen <= met:
             last_ms = int(f32(f32(met - seen) * 1000.0))
-        flight = str(p.get("flight") or "").strip()
-        if flight:
-            st["indicativos"][f"{int(icao):06X}"] = flight
         out.append(_DOWN.pack(
             int(icao),
             lat if tem_pos else nan,
@@ -106,9 +102,22 @@ def compactar(planes: list[dict]) -> tuple[list[bytes], dict]:
             p["gs"] if _finito(p["gs"]) else nan,
             p["track"] if _finito(p["track"]) else nan,
             last_ms,
+            indicativo(p.get("flight")),
         ))
     st["validos"] = len(out)
     return out, st
+
+
+def indicativo(flight) -> bytes:
+    """copia_indicativo() do OBC: ASCII 0x20..0x7E ate o primeiro byte fora da faixa; o resto 0."""
+    if isinstance(flight, bytes):
+        flight = flight.decode("latin-1")
+    out = bytearray(8)
+    for i, ch in enumerate(str(flight or "")[:8]):
+        if not 0x20 <= ord(ch) <= 0x7E:
+            break
+        out[i] = ord(ch)
+    return bytes(out)
 
 
 def quadro_p(registros: list[bytes]) -> bytes:
@@ -132,7 +141,6 @@ class EnlaceRede:
         self._cmds: list[bool] = []
         self.missao = False          # pedido do solo (bit Mission do ultimo telecomando)
         self._registros: list[bytes] = []
-        self._extras: dict[int, dict] = {}   # seq -> campos extras do quadro na resposta HTTP
         self._tem_dados = False
         self._ultimo_downlink = 0.0
         self.frames = 0
@@ -196,7 +204,7 @@ class EnlaceRede:
         with self._lock:
             agora = self.relogio()
             if self.missao and self._tem_dados and agora - self._ultimo_downlink >= DOWNLINK_PERIODO_S:
-                self._publica(quadro_p(self._registros), {"indicativos": self.ultimo_stats.get("indicativos", {})})
+                self._publica(quadro_p(self._registros))
                 self._ultimo_downlink = agora
 
     def _downlink_loop(self) -> None:
@@ -215,18 +223,9 @@ class EnlaceRede:
                 seq = 0   # a ponte veio de uma execucao anterior: manda tudo o que tem
             return self._ev_seq, [{"seq": k, "nivel": n, "texto": t} for k, n, t in self._eventos if k > seq]
 
-    def extras(self, seq: int) -> dict:
-        with self._lock:
-            return self._extras.get(seq, {})
-
-    def _publica(self, quadro: bytes, extras: dict | None = None) -> None:   # chamar com o lock
+    def _publica(self, quadro: bytes) -> None:   # chamar com o lock
         self._seq += 1
         self._quadros.append((self._seq, quadro))
-        if extras:
-            self._extras[self._seq] = extras
-        primeiro = self._quadros[0][0]
-        for k in [k for k in self._extras if k < primeiro]:
-            del self._extras[k]
 
 
 class _ParaEnlace(logging.Handler):
@@ -314,7 +313,7 @@ def servidor_http(enlace: EnlaceRede, porta: int) -> ThreadingHTTPServer:
                     ev = 0
                 ultimo, qs = enlace.quadros_desde(desde)
                 ultimo_ev, evs = enlace.eventos_desde(ev)
-                self._json(200, {"ultimo": ultimo, "quadros": [{"seq": k, "hex": q.hex(), **enlace.extras(k)} for k, q in qs],
+                self._json(200, {"ultimo": ultimo, "quadros": [{"seq": k, "hex": q.hex()} for k, q in qs],
                                  "ultimo_evento": ultimo_ev, "eventos": evs, "estado": enlace.saude})
             elif u.path == "/estado":
                 self._json(200, {"missao": enlace.missao, "blocos": enlace.frames, "tcs_ruins": enlace.tcs_ruins,

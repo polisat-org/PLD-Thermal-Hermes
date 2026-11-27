@@ -80,12 +80,20 @@ class EnlaceTests(unittest.TestCase):
         ps = [q for _, q in self.e.quadros_desde(0)[1] if q[:1] == b"P"]
         self.assertEqual(len(ps), 1)
         self.assertEqual(ps[0][1], 3)
-        self.assertEqual(len(ps[0]), 2 + 3 * 28)
-        icao, lat, lon, alt, gs, trk, last_ms = struct.unpack_from("<IfffffI", ps[0], 2)
+        self.assertEqual(len(ps[0]), 2 + 3 * 36)
+        icao, lat, lon, alt, gs, trk, last_ms, cs = struct.unpack_from("<IfffffI8s", ps[0], 2)
         self.assertEqual(icao, 0xE48000)
         self.assertEqual(last_ms, 98000)
-        seq = [k for k, q in self.e.quadros_desde(0)[1] if q[:1] == b"P"][0]
-        self.assertEqual(self.e.extras(seq), {"indicativos": {"E48000": "TAM3050", "E48001": "TAM3051", "E48002": "TAM3052"}})
+        self.assertEqual(cs, b"TAM3050\0")
+        self.assertEqual(struct.unpack_from("8s", ps[0], 2 + 36 + 28)[0], b"TAM3051\0")
+
+    def test_indicativo_igual_ao_obc(self):
+        from hermes_simples.rede import indicativo
+        self.assertEqual(indicativo("TAM3054 "), b"TAM3054 ")
+        self.assertEqual(indicativo("GLO12\x01XY"), b"GLO12\0\0\0")
+        self.assertEqual(indicativo("AB\ufffdCD"), b"AB\0\0\0\0\0\0")   # byte >= 0x80 vira U+FFFD no unpack
+        self.assertEqual(indicativo(""), bytes(8))
+        self.assertEqual(indicativo("ABCDEFGHIJ"), b"ABCDEFGH")
 
     def test_quadros_desde(self):
         for _ in range(3):
